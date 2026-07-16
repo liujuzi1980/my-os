@@ -1,0 +1,17 @@
+{
+  "name": "MyOS - 虚拟手机系统",
+  "short_name": "MyOS",
+  "description": "你的私人 AI 伴侣手机",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1a1a2e",
+  "theme_color": "#1a1a2e",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/vite.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    }
+  ]
+}
