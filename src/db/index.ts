@@ -1,7 +1,7 @@
 import { openDB, DBSchema, IDBPDatabase } from 'idb';
 import type { 
   Character, ChatMessage, SystemSettings, WorldBook, UserProfile,
-  MemoryEntry, LifeStageSummary 
+  MemoryEntry, LifeStageSummary, CharacterState, ScheduleItem 
 } from '@/types';
 
 interface MyOSDB extends DBSchema {
@@ -24,10 +24,19 @@ interface MyOSDB extends DBSchema {
     value: LifeStageSummary; 
     indexes: { 'by-character': string }; 
   };
+  characterStates: {
+    key: string;
+    value: CharacterState;
+  };
+  schedules: {
+    key: string;
+    value: ScheduleItem;
+    indexes: { 'by-character': string };
+  };
 }
 
-const DB_NAME = 'MyOS';
-const DB_VERSION = 2;
+const DB_NAME = 'MyOS_v2';
+const DB_VERSION = 1;
 
 let dbPromise: Promise<IDBPDatabase<MyOSDB>> | null = null;
 
@@ -36,7 +45,6 @@ export function getDB(): Promise<IDBPDatabase<MyOSDB>> {
 
   dbPromise = openDB<MyOSDB>(DB_NAME, DB_VERSION, {
     upgrade(db, oldVersion) {
-      // v1: 初始表
       if (oldVersion < 1) {
         if (!db.objectStoreNames.contains('characters')) {
           db.createObjectStore('characters', { keyPath: 'id' });
@@ -56,7 +64,6 @@ export function getDB(): Promise<IDBPDatabase<MyOSDB>> {
           db.createObjectStore('userProfile', { keyPath: 'key' });
         }
       }
-      // v2: 新增记忆系统
       if (oldVersion < 2) {
         if (!db.objectStoreNames.contains('memories')) {
           const store = db.createObjectStore('memories', { keyPath: 'id' });
@@ -66,6 +73,17 @@ export function getDB(): Promise<IDBPDatabase<MyOSDB>> {
         }
         if (!db.objectStoreNames.contains('lifeStageSummaries')) {
           const store = db.createObjectStore('lifeStageSummaries', { keyPath: 'id' });
+          store.createIndex('by-character', 'characterId');
+        }
+      }
+      if (oldVersion < 3) {
+        if (!db.objectStoreNames.contains('characterStates')) {
+          db.createObjectStore('characterStates', { keyPath: 'characterId' });
+        }
+      }
+      if (oldVersion < 4) {
+        if (!db.objectStoreNames.contains('schedules')) {
+          const store = db.createObjectStore('schedules', { keyPath: 'id' });
           store.createIndex('by-character', 'characterId');
         }
       }
@@ -107,6 +125,51 @@ export async function deleteCharacter(id: string): Promise<void> {
   const tx3 = db.transaction('lifeStageSummaries', 'readwrite');
   for (const s of allSummaries) await tx3.store.delete(s.id);
   await tx3.done;
+  await deleteCharacterState(id);
+  await deleteSchedulesByCharacter(id);
+}
+
+// ==================== 角色状态 CRUD ====================
+
+export async function getCharacterState(characterId: string): Promise<CharacterState | undefined> {
+  const db = await getDB();
+  return db.get('characterStates', characterId);
+}
+
+export async function saveCharacterState(state: CharacterState): Promise<void> {
+  const db = await getDB();
+  await db.put('characterStates', { ...state, stateUpdatedAt: Date.now() });
+}
+
+export async function deleteCharacterState(characterId: string): Promise<void> {
+  const db = await getDB();
+  await db.delete('characterStates', characterId);
+}
+
+// ==================== 日程 CRUD（预留）====================
+
+export async function getSchedulesByCharacter(characterId: string): Promise<ScheduleItem[]> {
+  const db = await getDB();
+  const index = db.transaction('schedules').store.index('by-character');
+  return index.getAll(characterId);
+}
+
+export async function saveSchedule(schedule: ScheduleItem): Promise<void> {
+  const db = await getDB();
+  await db.put('schedules', schedule);
+}
+
+export async function deleteSchedule(id: string): Promise<void> {
+  const db = await getDB();
+  await db.delete('schedules', id);
+}
+
+export async function deleteSchedulesByCharacter(characterId: string): Promise<void> {
+  const db = await getDB();
+  const all = await getSchedulesByCharacter(characterId);
+  const tx = db.transaction('schedules', 'readwrite');
+  for (const s of all) await tx.store.delete(s.id);
+  await tx.done;
 }
 
 // ==================== 聊天记录 CRUD ====================
@@ -244,12 +307,14 @@ export async function exportAllData(): Promise<Record<string, unknown[]>> {
     userProfile: [await getUserProfile()],
     memories: await db.getAll('memories'),
     lifeStageSummaries: await db.getAll('lifeStageSummaries'),
+    characterStates: await db.getAll('characterStates'),
+    schedules: await db.getAll('schedules'),
   };
 }
 
 export async function importAllData(data: Record<string, unknown[]>): Promise<void> {
   const db = await getDB();
-  const stores = ['characters', 'chats', 'settings', 'worldbooks', 'userProfile', 'memories', 'lifeStageSummaries'] as const;
+  const stores = ['characters', 'chats', 'settings', 'worldbooks', 'userProfile', 'memories', 'lifeStageSummaries', 'characterStates', 'schedules'] as const;
   for (const storeName of stores) {
     const tx = db.transaction(storeName, 'readwrite');
     await tx.store.clear();

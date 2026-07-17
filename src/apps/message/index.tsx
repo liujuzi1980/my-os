@@ -35,6 +35,7 @@ const AI_MENU_ITEMS: MessageMenuItem[] = [
   { key: 'copy', label: '复制', icon: <Copy size={15} /> },
   { key: 'favorite', label: '收藏', icon: <Star size={15} /> },
   { key: 'edit', label: '编辑', icon: <Edit3 size={15} /> },
+  { key: 'regenerate', label: '重roll', icon: <RotateCcw size={15} /> },
   { key: 'multiSelect', label: '多选', icon: <Layers size={15} /> },
   { key: 'delete', label: '删除', icon: <Trash2 size={15} />, danger: true },
 ];
@@ -71,7 +72,6 @@ function MessageBubble({
   const bubbleRef = useRef<HTMLDivElement>(null);
   const [menuPosition, setMenuPosition] = useState<'top' | 'bottom'>('top');
 
-  // 点击外部关闭菜单
   useEffect(() => {
     if (!isMenuOpen) return;
     const handleClickOutside = (e: MouseEvent) => {
@@ -84,12 +84,10 @@ function MessageBubble({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isMenuOpen]);
 
-  // 打开菜单时判断位置
   useEffect(() => {
     if (isMenuOpen && bubbleRef.current) {
       const rect = bubbleRef.current.getBoundingClientRect();
       const menuHeight = (msg.role === 'user' ? USER_MENU_ITEMS : AI_MENU_ITEMS).length * 40 + 10;
-      // 如果上方空间不足（距离顶部小于菜单高度+60px顶部栏），显示在下方
       if (rect.top < menuHeight + 60) {
         setMenuPosition('bottom');
       } else {
@@ -125,7 +123,6 @@ function MessageBubble({
 
   return (
     <div className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} items-start gap-2`}>
-      {/* 多选模式 - 复选框 */}
       {isMultiSelectMode && (
         <button onClick={onToggleSelect} className="mt-3 flex-shrink-0">
           {isSelected ? (
@@ -138,17 +135,13 @@ function MessageBubble({
         </button>
       )}
 
-      {/* AI 头像 */}
       {msg.role === 'assistant' && (
         <div className="w-7 h-7 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center text-white text-xs font-bold flex-shrink-0 mt-1">
           {characterName[0]}
         </div>
       )}
 
-      {/* 气泡容器 - relative 用于菜单定位 */}
       <div className="relative max-w-[75%]" ref={bubbleRef}>
-
-        {/* 操作菜单 - 智能显示在上方或下方 */}
         {isMenuOpen && !isMultiSelectMode && (
           <div 
             ref={menuRef}
@@ -180,7 +173,6 @@ function MessageBubble({
           </div>
         )}
 
-        {/* 编辑模式 */}
         {isEditing ? (
           <div className="glass-card p-3">
             <input
@@ -219,14 +211,12 @@ function MessageBubble({
           </div>
         )}
 
-        {/* 复制成功提示 */}
         {copyFeedback && (
           <div className={`absolute -bottom-6 ${msg.role === 'user' ? 'right-0' : 'left-0'} text-[10px] text-green-400 whitespace-nowrap bg-black/60 px-2 py-0.5 rounded-full`}>
             已复制
           </div>
         )}
 
-        {/* 收藏成功提示 */}
         {favoriteFeedback && (
           <div className={`absolute -bottom-6 ${msg.role === 'user' ? 'right-0' : 'left-0'} text-[10px] text-yellow-400 whitespace-nowrap bg-black/60 px-2 py-0.5 rounded-full`}>
             已收藏
@@ -243,7 +233,10 @@ export default function MessageApp() {
   const { 
     activeCharacterId, 
     getActiveCharacter, 
+    getCharacterState,
+    updateCharacterState,
     settings,
+    userProfile,
     setCurrentApp,
     setIsLoading,
     updateCharacter,
@@ -253,48 +246,36 @@ export default function MessageApp() {
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
 
-  // 哪个消息的菜单打开了
   const [openMenuMsgId, setOpenMenuMsgId] = useState<string | null>(null);
-
-  // 多选模式
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-
-  // 编辑模式
   const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
-
-  // 引用回复
   const [quotingMsg, setQuotingMsg] = useState<ChatMessage | null>(null);
-
-  // 确认弹窗
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<'single' | 'multi'>('single');
   const [deleteMsgId, setDeleteMsgId] = useState<string | null>(null);
-
-  // 反馈提示
   const [copyFeedbackId, setCopyFeedbackId] = useState<string | null>(null);
   const [favoriteFeedbackId, setFavoriteFeedbackId] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const initializedRef = useRef(false);
+  const isFirstMessageRef = useRef(true);
 
   const character = getActiveCharacter();
 
-  // 加载聊天记录 + 更新离线时间
+  // 加载聊天记录 + 更新离线时间 + 加载角色状态
   useEffect(() => {
     if (activeCharacterId && character && !initializedRef.current) {
       initializedRef.current = true;
       loadMessages();
-      // 更新 lastVisitTime（为下一次离线感知做准备）
       const updated = ContextBuilder.updateLastVisit(character);
       updateCharacter(updated);
     }
   }, [activeCharacterId]);
 
-  // 键盘弹起时自动滚动到底部
   useEffect(() => {
     const handleResize = () => {
       setTimeout(() => {
@@ -315,17 +296,46 @@ export default function MessageApp() {
     setMessages(chats);
   };
 
-  // ==================== LLM 调用 ====================
+  // ==================== LLM 调用（简化版）====================
 
-  const callLLM = async () => {
-    if (!character || !settings.apiKey) return null;
+  const callLLM = async (): Promise<{ content: string | null; error?: string }> => {
+    if (!character) {
+      return { content: null, error: '未选择角色' };
+    }
+    if (!settings.apiKey || settings.apiKey.trim() === '') {
+      return { content: null, error: 'API Key 为空，请在设置中填写' };
+    }
+    if (!settings.apiBaseUrl) {
+      return { content: null, error: 'API Base URL 为空' };
+    }
+    if (!settings.model) {
+      return { content: null, error: '模型未选择' };
+    }
 
     setIsTyping(true);
     setIsLoading(true);
 
     try {
-      const builder = ContextBuilder.create(character, settings);
-      const context = await builder.buildCoreContext(30);
+      let state = getCharacterState(character.id);
+      if (!state) {
+        state = {
+          characterId: character.id,
+          mood: '平静',
+          emotionalResidue: '平静',
+          currentActivity: '闲着',
+          stateUpdatedAt: Date.now(),
+        };
+      }
+
+      const isFirstMessage = isFirstMessageRef.current;
+      const builder = ContextBuilder.create(character, state, userProfile);
+      const { messages: contextMessages, newState } = await builder.buildCoreContext(isFirstMessage, 15);
+
+      console.log('[LLM 请求]', {
+        url: settings.apiBaseUrl,
+        model: settings.model,
+        messageCount: contextMessages.length,
+      });
 
       const response = await fetch(`${settings.apiBaseUrl}/chat/completions`, {
         method: 'POST',
@@ -335,19 +345,43 @@ export default function MessageApp() {
         },
         body: JSON.stringify({
           model: settings.model,
-          messages: context,
+          messages: contextMessages,
           temperature: 0.8,
           max_tokens: 2000,
         }),
       });
 
-      if (!response.ok) throw new Error(`API 错误: ${response.status}`);
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => '无法读取错误信息');
+        console.error('[LLM 响应错误]', response.status, errorText);
+        return { 
+          content: null, 
+          error: `API 返回错误 ${response.status}: ${errorText.slice(0, 200)}` 
+        };
+      }
 
       const data = await response.json();
-      return data.choices[0].message.content;
-    } catch (error) {
-      console.error('LLM 调用失败:', error);
-      return null;
+
+      if (!data.choices || !data.choices[0] || !data.choices[0].message) {
+        console.error('[LLM 响应格式异常]', data);
+        return { content: null, error: 'API 响应格式异常' };
+      }
+
+      const aiContent = data.choices[0].message.content;
+
+      // 更新状态时间戳
+      await updateCharacterState(character.id, newState);
+
+      return { content: aiContent };
+    } catch (error: any) {
+      console.error('[LLM 调用异常]', error);
+      let errorMsg = '网络请求失败';
+      if (error.message?.includes('Failed to fetch')) {
+        errorMsg = '网络请求失败，可能是 CORS 问题或 API 地址不可达';
+      } else if (error.message) {
+        errorMsg = error.message;
+      }
+      return { content: null, error: errorMsg };
     } finally {
       setIsTyping(false);
       setIsLoading(false);
@@ -377,13 +411,14 @@ export default function MessageApp() {
     await saveChatMessage(userMsg);
     setMessages(prev => [...prev, userMsg]);
 
-    const aiContent = await callLLM();
-    if (!aiContent) {
+    const { content: aiContent, error } = await callLLM();
+
+    if (!aiContent || error) {
       const errorMsg: ChatMessage = {
         id: crypto.randomUUID(),
         characterId: character.id,
         role: 'assistant',
-        content: '（消息发送失败，请检查 API 设置）',
+        content: `（发送失败：${error || '未知错误'}）`,
         timestamp: Date.now(),
       };
       await saveChatMessage(errorMsg);
@@ -401,7 +436,10 @@ export default function MessageApp() {
     await saveChatMessage(aiMsg);
     setMessages(prev => [...prev, aiMsg]);
 
-    // [MEMORY] 异步脱水：不阻塞 UI
+    // 第一条消息已处理，后续不再注入离线感知
+    isFirstMessageRef.current = false;
+
+    // [MEMORY] 异步脱水
     (async () => {
       try {
         const engine = new MemoryEngine(character.id, settings);
@@ -410,7 +448,6 @@ export default function MessageApp() {
         if (newMemories.length > 0) {
           await engine.storeMemories(newMemories);
         }
-        // 每 20 轮触发遗忘衰减
         const roundCount = (character.conversationRound || 0) + 1;
         if (roundCount % 20 === 0) {
           await engine.decay();
@@ -420,7 +457,7 @@ export default function MessageApp() {
         console.error('[Memory] background dehydration failed:', e);
       }
     })();
-  }, [inputText, character, settings, activeCharacterId, quotingMsg]);
+  }, [inputText, character, settings, activeCharacterId, quotingMsg, userProfile, getCharacterState, updateCharacterState]);
 
   // ==================== 消息操作 ====================
 
@@ -440,7 +477,6 @@ export default function MessageApp() {
   };
 
   const handleFavorite = (msgId: string) => {
-    // 收藏功能：显示提示（后续可接入收藏系统）
     setFavoriteFeedbackId(msgId);
     setTimeout(() => setFavoriteFeedbackId(null), 1500);
   };
@@ -459,6 +495,115 @@ export default function MessageApp() {
     };
     await saveChatMessage(recallNotice);
     setMessages(prev => prev.filter(m => m.id !== msgId).concat(recallNotice));
+  };
+
+  // ==================== 重roll（重新生成）====================
+
+  const handleRegenerate = async (msg: ChatMessage) => {
+    if (!character) return;
+
+    // 删除这条AI消息
+    const db = await import('@/db').then(m => m.getDB());
+    await db.delete('chats', msg.id);
+    setMessages(prev => prev.filter(m => m.id !== msg.id));
+
+    // 标记为重新生成
+    setIsTyping(true);
+    setIsLoading(true);
+
+    try {
+      let state = getCharacterState(character.id);
+      if (!state) {
+        state = {
+          characterId: character.id,
+          mood: '平静',
+          emotionalResidue: '平静',
+          currentActivity: '闲着',
+          stateUpdatedAt: Date.now(),
+        };
+      }
+
+      // 重roll时不是第一条消息，不注入离线感知
+      const builder = ContextBuilder.create(character, state, userProfile);
+      const { messages: contextMessages, newState } = await builder.buildCoreContext(false, 15);
+
+      const response = await fetch(`${settings.apiBaseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${settings.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: settings.model,
+          messages: contextMessages,
+          temperature: 0.9, // 重roll时提高temperature让回复更不同
+          max_tokens: 2000,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => '无法读取错误信息');
+        console.error('[LLM 响应错误]', response.status, errorText);
+        const errorMsg: ChatMessage = {
+          id: crypto.randomUUID(),
+          characterId: character.id,
+          role: 'assistant',
+          content: `（重新生成失败：API 返回错误 ${response.status}）`,
+          timestamp: Date.now(),
+          isRegenerated: true,
+        };
+        await saveChatMessage(errorMsg);
+        setMessages(prev => [...prev, errorMsg]);
+        return;
+      }
+
+      const data = await response.json();
+
+      if (!data.choices || !data.choices[0] || !data.choices[0].message) {
+        const errorMsg: ChatMessage = {
+          id: crypto.randomUUID(),
+          characterId: character.id,
+          role: 'assistant',
+          content: '（重新生成失败：API 响应格式异常）',
+          timestamp: Date.now(),
+          isRegenerated: true,
+        };
+        await saveChatMessage(errorMsg);
+        setMessages(prev => [...prev, errorMsg]);
+        return;
+      }
+
+      const aiContent = data.choices[0].message.content;
+
+      // 更新状态时间戳
+      await updateCharacterState(character.id, newState);
+
+      const aiMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        characterId: character.id,
+        role: 'assistant',
+        content: aiContent,
+        timestamp: Date.now(),
+        isRegenerated: true,
+      };
+      await saveChatMessage(aiMsg);
+      setMessages(prev => [...prev, aiMsg]);
+    } catch (error: any) {
+      console.error('[重roll 异常]', error);
+      const errorMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        characterId: character.id,
+        role: 'assistant',
+        content: `（重新生成失败：${error.message || '网络错误'}）`,
+        timestamp: Date.now(),
+        isRegenerated: true,
+      };
+      await saveChatMessage(errorMsg);
+      setMessages(prev => [...prev, errorMsg]);
+    } finally {
+      setIsTyping(false);
+      setIsLoading(false);
+    }
   };
 
   const handleQuote = (msg: ChatMessage) => {
@@ -502,6 +647,9 @@ export default function MessageApp() {
       case 'multiSelect':
         setIsMultiSelectMode(true);
         setSelectedIds(new Set([msg.id]));
+        break;
+      case 'regenerate':
+        handleRegenerate(msg);
         break;
       case 'delete':
         setDeleteTarget('single');
@@ -668,9 +816,6 @@ export default function MessageApp() {
         )}
 
         {messages.map((msg, index) => {
-          const showTime = index === 0 || 
-            msg.timestamp - messages[index - 1].timestamp > 5 * 60 * 1000;
-
           if (msg.role === 'system') {
             return (
               <div key={msg.id} className="text-center my-2">
@@ -681,11 +826,9 @@ export default function MessageApp() {
 
           return (
             <div key={msg.id}>
-              {showTime && (
-                <div className="text-center my-3">
-                  <span className="text-white/25 text-xs">{formatTime(msg.timestamp)}</span>
-                </div>
-              )}
+              <div className="text-center my-1">
+                <span className="text-white/20 text-[10px]">{formatTime(msg.timestamp)}</span>
+              </div>
               <MessageBubble
                 msg={msg}
                 characterName={character.name}
@@ -729,7 +872,7 @@ export default function MessageApp() {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* 多选模式底部操作栏 - 只保留删除 */}
+      {/* 多选模式底部操作栏 */}
       {isMultiSelectMode && (
         <div className="dock-blur px-4 py-3 flex items-center justify-center border-t border-white/5 flex-shrink-0">
           <button
@@ -750,7 +893,6 @@ export default function MessageApp() {
       {/* 普通输入框 */}
       {!isMultiSelectMode && (
         <div className="flex-shrink-0">
-          {/* 引用提示 - 显示在输入框上方 */}
           {quotingMsg && (
             <div className="mx-4 mt-2 mb-1 px-3 py-1.5 bg-white/5 rounded-lg border border-white/5 flex items-center gap-2">
               <Quote size={12} className="text-blue-400 flex-shrink-0" />
@@ -764,28 +906,28 @@ export default function MessageApp() {
           )}
           <div className="px-4 py-3 border-t border-white/5">
             <div className="flex items-center gap-2">
-            <button className="p-2 rounded-full hover:bg-white/10 transition-colors flex-shrink-0">
-              <Image size={20} className="text-white/50" />
-            </button>
-            <input
-              ref={inputRef}
-              type="text"
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={quotingMsg ? '回复引用...' : '输入消息...'}
-              className="glass-input flex-1 text-sm"
-            />
-            <button
-              onClick={sendMessage}
-              disabled={!inputText.trim() || isTyping}
-              className={`p-2.5 rounded-full transition-all flex-shrink-0 ${inputText.trim() && !isTyping ? 'bg-gradient-to-r from-blue-500 to-purple-500 hover:opacity-90' : 'bg-white/5 cursor-not-allowed'}`}
-            >
-              <Send size={18} className="text-white" />
-            </button>
+              <button className="p-2 rounded-full hover:bg-white/10 transition-colors flex-shrink-0">
+                <Image size={20} className="text-white/50" />
+              </button>
+              <input
+                ref={inputRef}
+                type="text"
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={quotingMsg ? '回复引用...' : '输入消息...'}
+                className="glass-input flex-1 text-sm"
+              />
+              <button
+                onClick={sendMessage}
+                disabled={!inputText.trim() || isTyping}
+                className={`p-2.5 rounded-full transition-all flex-shrink-0 ${inputText.trim() && !isTyping ? 'bg-gradient-to-r from-blue-500 to-purple-500 hover:opacity-90' : 'bg-white/5 cursor-not-allowed'}`}
+              >
+                <Send size={18} className="text-white" />
+              </button>
+            </div>
           </div>
         </div>
-      </div>
       )}
 
       {/* 清空对话确认弹窗 */}

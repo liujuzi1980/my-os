@@ -3,8 +3,33 @@
 export type RelationshipStage = 'stranger' | 'acquaintance' | 'friend' | 'close' | 'intimate';
 
 export interface EmotionCoordinate {
-  valence: number; // -1 ~ 1, 效价: 负面 ↔ 正面
-  arousal: number; // -1 ~ 1, 唤醒度: 平静 ↔ 激动
+  valence: number;
+  arousal: number;
+}
+
+// ==================== 角色状态系统（简化版）====================
+
+export interface CharacterState {
+  characterId: string;
+  mood: string;          // 心情底色，如"刚被甲方气到""心情不错"
+  emotionalResidue: string; // 上次聊天结束时的情绪残留
+  currentActivity: string;  // 当前在做什么，如"刚睡醒""在吃饭"（由用户或AI设定，非自动计算）
+  stateUpdatedAt: number;   // 状态最后更新时间
+}
+
+// ==================== 日程系统（预留，未来做独立App）====================
+
+export type ActivityType = 'work' | 'rest' | 'leisure' | 'sleep' | 'meal' | 'commute' | 'exercise';
+
+export interface ScheduleItem {
+  id: string;
+  characterId: string;
+  dayOfWeek: number;      // 0-6, 0=周日
+  startTime: string;      // "HH:mm"
+  endTime: string;        // "HH:mm"
+  activity: string;       // 活动名称
+  activityType: ActivityType;
+  description?: string;
 }
 
 export interface Character {
@@ -28,7 +53,7 @@ export interface Character {
   impression?: string;
   worldBooks?: string[];
 
-  // === 新增：离线感知 ===
+  // === 离线感知 ===
   lastVisitTime?: number;
   conversationRound?: number;
 }
@@ -43,8 +68,8 @@ export interface MemoryEntry {
   content: string;
   tier: MemoryTier;
   emotion: EmotionCoordinate;
-  importance: number;        // 1-10
-  domain: string;            // relationship / work / hobby / general
+  importance: number;
+  domain: string;
   createdAt: number;
   lastAccessed: number;
   accessCount: number;
@@ -52,7 +77,7 @@ export interface MemoryEntry {
   sourceMessageIds: string[];
   relatedMemoryIds: string[];
   isPinned: boolean;
-  feel?: string;             // 第一人称感受痕迹
+  feel?: string;
 }
 
 export interface LifeStageSummary {
@@ -122,7 +147,7 @@ export interface SystemSettings {
   theme: 'dark' | 'light';
   wallpaper: string;
   memoryEngine: MemoryEngineConfig;
-  lastApp?: AppID;           // 记住上次所在的页面
+  lastApp?: AppID;
 }
 
 // ==================== 通知 ====================
