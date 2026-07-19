@@ -51,6 +51,10 @@ const AI_MENU_ITEMS: MessageMenuItem[] = [
 
 // ==================== 工具调用解析 ====================
 
+function cleanToolBlocks(content: string): string {
+  return content.replace(/```tool\s*[\s\S]*?```/g, '').trim();
+}
+
 function parseToolCalls(content: string): { text: string; toolCalls: ToolCall[] } {
   const toolCallRegex = /```tool\s*\n([\s\S]*?)\n```/g;
   const toolCalls: ToolCall[] = [];
@@ -232,21 +236,57 @@ function MessageBubble({
             </div>
           </div>
         ) : (
-          <div
-            onClick={handleClick}
-            onContextMenu={handleContextMenu}
-            onTouchStart={handleTouchStart}
-            className={`
-              ${msg.role === 'user' ? 'message-bubble-user' : 'message-bubble-ai'}
-              ${msg.isRegenerated ? 'border-yellow-400/30' : ''}
-              ${isMenuOpen ? 'ring-2 ring-white/20' : ''}
-              ${isMultiSelectMode ? 'cursor-pointer' : 'cursor-pointer select-none'}
-              transition-all duration-150
-            `}
-          >
-            <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.content}</p>
-            {msg.isRegenerated && (
-              <span className="text-[10px] text-yellow-400/60 mt-1 block">已重新生成</span>
+          <div>
+            <div
+              onClick={handleClick}
+              onContextMenu={handleContextMenu}
+              onTouchStart={handleTouchStart}
+              className={`
+                ${msg.role === 'user' ? 'message-bubble-user' : 'message-bubble-ai'}
+                ${msg.isRegenerated ? 'border-yellow-400/30' : ''}
+                ${isMenuOpen ? 'ring-2 ring-white/20' : ''}
+                ${isMultiSelectMode ? 'cursor-pointer' : 'cursor-pointer select-none'}
+                transition-all duration-150
+              `}
+            >
+              <p className="text-sm leading-relaxed whitespace-pre-wrap">{cleanToolBlocks(msg.content)}</p>
+              {msg.isRegenerated && (
+                <span className="text-[10px] text-yellow-400/60 mt-1 block">已重新生成</span>
+              )}
+            </div>
+            {/* POI 卡片 */}
+            {msg.poiData && msg.poiData.length > 0 && (
+              <div className="mt-2 space-y-1.5">
+                {msg.poiData.map((poi, i) => (
+                  <div key={i} className="bg-white/5 border border-white/10 rounded-lg p-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-white/80 text-sm font-medium truncate">{poi.name}</span>
+                      {poi.rating && <span className="text-yellow-400 text-xs">⭐ {poi.rating}</span>}
+                    </div>
+                    <p className="text-white/35 text-xs mt-0.5 truncate">{poi.address}</p>
+                    <div className="flex items-center gap-3 mt-1">
+                      {poi.distance && <span className="text-white/25 text-xs">📍 {parseInt(poi.distance) > 1000 ? (parseInt(poi.distance)/1000).toFixed(1) + 'km' : poi.distance + 'm'}</span>}
+                      {poi.tel && <span className="text-white/25 text-xs">📞 {poi.tel}</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {/* 天气卡片 */}
+            {msg.weatherData && (
+              <div className="mt-2 bg-gradient-to-br from-blue-500/10 to-purple-500/10 border border-white/10 rounded-xl p-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-white/40 text-xs">{msg.weatherData.city}</p>
+                    <p className="text-white/90 text-base font-semibold">{msg.weatherData.weather}</p>
+                  </div>
+                  <p className="text-white/90 text-xl font-bold">{msg.weatherData.temperature}°C</p>
+                </div>
+                <div className="flex items-center gap-3 mt-2 pt-2 border-t border-white/5">
+                  {msg.weatherData.wind && <span className="text-white/30 text-xs">🌬 {msg.weatherData.wind}</span>}
+                  {msg.weatherData.humidity && <span className="text-white/30 text-xs">💧 湿度 {msg.weatherData.humidity}</span>}
+                </div>
+              </div>
             )}
           </div>
         )}
@@ -311,6 +351,10 @@ export default function MessageApp() {
   const [openMenuMsgId, setOpenMenuMsgId] = useState<string | null>(null);
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // 高德地图数据缓存
+  const poiDataRef = useRef<ChatMessage['poiData']>(undefined);
+  const weatherDataRef = useRef<ChatMessage['weatherData']>(undefined);
   const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
   const [quotingMsg, setQuotingMsg] = useState<ChatMessage | null>(null);
@@ -411,15 +455,12 @@ export default function MessageApp() {
       const builder = ContextBuilder.create(character, state, userProfile, mcpTools);
       const { messages: contextMessages, newState } = await builder.buildCoreContext(isFirstMessage, 15);
 
-      // === 注入高德地图工具描述（仅初次调用，避免工具循环）===
+      // === 注入高德地图工具描述（仅初次调用）===
       if (!extraSystemMessages || extraSystemMessages.length === 0) {
         const amapDesc = getAmapToolDescriptions();
         const systemIndex = contextMessages.findLastIndex(m => m.role === 'system');
         if (systemIndex >= 0) {
-          contextMessages.splice(systemIndex + 1, 0, {
-            role: 'system',
-            content: amapDesc,
-          });
+          contextMessages.splice(systemIndex + 1, 0, { role: 'system', content: amapDesc });
         }
       }
 
@@ -505,6 +546,14 @@ export default function MessageApp() {
     for (const toolCall of toolCalls) {
       // === 高德地图工具（直接 API 调用，不走 MCP）===
       if (toolCall.toolName.startsWith('amap_')) {
+        const knownTools = ['amap_geocode', 'amap_search_nearby', 'amap_weather'];
+        if (!knownTools.includes(toolCall.toolName)) {
+          extraSystemMessages.push({
+            role: 'system',
+            content: `[工具调用失败] 工具 ${toolCall.toolName} 不存在。可用工具：amap_geocode, amap_search_nearby, amap_weather。请直接回复用户。`,
+          });
+          continue;
+        }
         setIsToolCalling(true);
         setCurrentToolName(toolCall.toolName);
         try {
@@ -513,10 +562,35 @@ export default function MessageApp() {
             role: 'system',
             content: buildToolResultPrompt(toolCall.toolName, result),
           });
+          // 保存卡片数据到 ref
+          if (toolCall.toolName === 'amap_search_nearby') {
+            const r = result as any;
+            if (r.results && Array.isArray(r.results)) {
+              poiDataRef.current = r.results.slice(0, 5).map((item: any) => ({
+                name: item.name || '',
+                address: item.address || '',
+                distance: item.distance || '',
+                rating: item.rating || '',
+                tel: item.tel || '',
+              }));
+            }
+          }
+          if (toolCall.toolName === 'amap_weather') {
+            const r = result as any;
+            if (r.live) {
+              weatherDataRef.current = {
+                city: r.live.city,
+                weather: r.live.weather,
+                temperature: r.live.temperature,
+                wind: `${r.live.winddirection || ''} ${r.live.windpower || ''}级`,
+                humidity: `${r.live.humidity}%`,
+              };
+            }
+          }
         } catch (e: any) {
           extraSystemMessages.push({
             role: 'system',
-            content: `[工具调用失败]\n工具：${toolCall.toolName}\n错误：${e.message || '调用失败'}`,
+            content: `[工具调用失败] ${toolCall.toolName}: ${e.message || '调用失败'}`,
           });
         } finally {
           setIsToolCalling(false);
@@ -628,7 +702,11 @@ export default function MessageApp() {
       role: 'assistant',
       content: finalContent,
       timestamp: Date.now(),
+      poiData: poiDataRef.current,
+      weatherData: weatherDataRef.current,
     };
+    poiDataRef.current = undefined;
+    weatherDataRef.current = undefined;
     await saveChatMessage(aiMsg);
     setMessages(prev => [...prev, aiMsg]);
 
@@ -781,7 +859,11 @@ export default function MessageApp() {
         content: aiContent,
         timestamp: Date.now(),
         isRegenerated: true,
+        poiData: poiDataRef.current,
+        weatherData: weatherDataRef.current,
       };
+      poiDataRef.current = undefined;
+      weatherDataRef.current = undefined;
       await saveChatMessage(aiMsg);
       setMessages(prev => [...prev, aiMsg]);
     } catch (error: any) {

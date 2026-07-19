@@ -26,7 +26,7 @@ export async function searchNearby(
   apiKey: string,
   location: string,
   keyword: string,
-  radius: number = 3000,
+  radius: number = 1000,
   pageSize: number = 10
 ): Promise<POI[]> {
   const type = CATEGORY_MAP[keyword] || '';

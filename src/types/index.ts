@@ -141,6 +141,8 @@ export interface ChatMessage {
   timestamp: number;
   imageUrl?: string;
   isRegenerated?: boolean;
+  poiData?: Array<{ name: string; address: string; distance?: string; rating?: string; tel?: string }>;
+  weatherData?: { city?: string; weather?: string; temperature?: string; wind?: string; humidity?: string };
 }
 
 // ==================== App 相关 ====================
@@ -188,7 +190,6 @@ export interface SystemSettings {
   memoryEngine: MemoryEngineConfig;
   lastApp?: AppID;
   mcpConnections: MCPConnection[];
-  amapKey?: string;  // 高德地图 API Key
 }
 
 // ==================== 通知 ====================

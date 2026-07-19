@@ -336,16 +336,8 @@ export default function SettingsApp() {
                 placeholder="填写高德 Web服务 Key"
                 className="glass-input w-full text-sm"
               />
-              <p className="text-white/30 text-xs mt-1.5 leading-relaxed">
-                用于让角色查询附近外卖、奶茶、咖啡店和天气。Key 类型必须是「Web服务」。
-                <a 
-                  href="https://console.amap.com/" 
-                  target="_blank" 
-                  rel="noopener noreferrer"
-                  className="text-blue-400/70 hover:text-blue-400 underline ml-1"
-                >
-                  去高德申请 →
-                </a>
+              <p className="text-white/30 text-xs mt-1.5">
+                用于查询附近美食、奶茶、咖啡店和天气
               </p>
             </div>
           </div>
