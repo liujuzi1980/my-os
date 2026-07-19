@@ -11,6 +11,7 @@ import {
   Wrench, Loader2
 } from 'lucide-react';
 import type { ChatMessage, MessageRole } from '@/types';
+import { getAmapToolDescriptions, callAmapTool } from '@/services/amap';
 
 // ==================== 类型定义 ====================
 
@@ -410,6 +411,18 @@ export default function MessageApp() {
       const builder = ContextBuilder.create(character, state, userProfile, mcpTools);
       const { messages: contextMessages, newState } = await builder.buildCoreContext(isFirstMessage, 15);
 
+      // === 注入高德地图工具描述（仅初次调用，避免工具循环）===
+      if (!extraSystemMessages || extraSystemMessages.length === 0) {
+        const amapDesc = getAmapToolDescriptions();
+        const systemIndex = contextMessages.findLastIndex(m => m.role === 'system');
+        if (systemIndex >= 0) {
+          contextMessages.splice(systemIndex + 1, 0, {
+            role: 'system',
+            content: amapDesc,
+          });
+        }
+      }
+
       // 如果有额外的系统消息（如工具调用结果），插入到最后一条系统消息之后
       if (extraSystemMessages && extraSystemMessages.length > 0) {
         const systemIndex = contextMessages.findLastIndex(m => m.role === 'system');
@@ -490,6 +503,28 @@ export default function MessageApp() {
     const extraSystemMessages: Array<{ role: string; content: string }> = [];
 
     for (const toolCall of toolCalls) {
+      // === 高德地图工具（直接 API 调用，不走 MCP）===
+      if (toolCall.toolName.startsWith('amap_')) {
+        setIsToolCalling(true);
+        setCurrentToolName(toolCall.toolName);
+        try {
+          const result = await callAmapTool(settings.amapKey || '', toolCall.toolName, toolCall.arguments);
+          extraSystemMessages.push({
+            role: 'system',
+            content: buildToolResultPrompt(toolCall.toolName, result),
+          });
+        } catch (e: any) {
+          extraSystemMessages.push({
+            role: 'system',
+            content: `[工具调用失败]\n工具：${toolCall.toolName}\n错误：${e.message || '调用失败'}`,
+          });
+        } finally {
+          setIsToolCalling(false);
+          setCurrentToolName('');
+        }
+        continue;
+      }
+
       // 查找对应的 connectionId（如果未指定，尝试在所有已连接中查找）
       let targetConnectionId = toolCall.connectionId;
 

@@ -237,6 +237,7 @@ export const useOSStore = create<OSState>()(
         wallpaper: 'default',
         memoryEngine: { type: 'local' },
         mcpConnections: [],
+        amapKey: '',
       },
       loadSettings: async () => {
         try {

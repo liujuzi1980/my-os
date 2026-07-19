@@ -1,30 +1,63 @@
-const CACHE_NAME = 'myos-v2';
+const CACHE_NAME = 'my-os-v1';
 
-self.addEventListener('install', (e) => {
+// 开发模式下不缓存（localhost / 127.0.0.1）
+const isDev = self.location.hostname === 'localhost' || 
+              self.location.hostname === '127.0.0.1';
+
+self.addEventListener('install', (event) => {
+  if (isDev) {
+    self.skipWaiting();
+    return;
+  }
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => {
+      return cache.addAll([
+        '/',
+        '/index.html',
+        '/manifest.json',
+      ]);
+    })
+  );
   self.skipWaiting();
 });
 
-self.addEventListener('activate', (e) => {
-  e.waitUntil(self.clients.claim());
+self.addEventListener('activate', (event) => {
+  if (isDev) {
+    self.clients.claim();
+    return;
+  }
+  event.waitUntil(
+    caches.keys().then((cacheNames) => {
+      return Promise.all(
+        cacheNames
+          .filter((name) => name !== CACHE_NAME)
+          .map((name) => caches.delete(name))
+      );
+    })
+  );
+  self.clients.claim();
 });
 
-// 缓存优先：重新加载时瞬间从本地读取
-self.addEventListener('fetch', (e) => {
-  e.respondWith(
-    caches.match(e.request).then((cached) => {
-      // 有缓存直接返回，瞬间加载
-      if (cached) return cached;
-      
-      // 没缓存再请求网络
-      return fetch(e.request).then((response) => {
-        if (!response || response.status !== 200 || response.type !== 'basic') {
-          return response;
-        }
-        const clone = response.clone();
-        caches.open(CACHE_NAME).then((cache) => {
-          cache.put(e.request, clone);
-        });
+self.addEventListener('fetch', (event) => {
+  // 开发模式下直接走网络，不缓存
+  if (isDev) {
+    return;
+  }
+
+  event.respondWith(
+    caches.match(event.request).then((response) => {
+      if (response) {
         return response;
+      }
+      return fetch(event.request).then((networkResponse) => {
+        if (!networkResponse || networkResponse.status !== 200 || networkResponse.type !== 'basic') {
+          return networkResponse;
+        }
+        const responseToCache = networkResponse.clone();
+        caches.open(CACHE_NAME).then((cache) => {
+          cache.put(event.request, responseToCache);
+        });
+        return networkResponse;
       });
     })
   );

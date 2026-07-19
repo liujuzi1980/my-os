@@ -188,6 +188,7 @@ export interface SystemSettings {
   memoryEngine: MemoryEngineConfig;
   lastApp?: AppID;
   mcpConnections: MCPConnection[];
+  amapKey?: string;  // 高德地图 API Key
 }
 
 // ==================== 通知 ====================

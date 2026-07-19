@@ -3,7 +3,7 @@ import { useOSStore } from '@/context/OSStore';
 import { 
   Key, Globe, Mic, Save, Download, Upload, Trash2, ChevronRight, User, 
   RefreshCw, Check, ChevronDown, AlertCircle, WifiOff, ShieldAlert,
-  Plug
+  Plug, MapPin
 } from 'lucide-react';
 import { exportAllData, importAllData } from '@/db';
 
@@ -319,6 +319,36 @@ export default function SettingsApp() {
             </div>
             <ChevronRight size={16} className="text-white/30" />
           </button>
+        </section>
+
+        {/* 地图服务 */}
+        <section>
+          <h2 className="text-white/50 text-xs font-medium uppercase tracking-wider mb-3 flex items-center gap-2">
+            <MapPin size={14} /> 地图服务
+          </h2>
+          <div className="space-y-3">
+            <div>
+              <label className="text-white/60 text-sm block mb-1.5">高德地图 API Key</label>
+              <input
+                type="password"
+                value={localSettings.amapKey || ''}
+                onChange={(e) => setLocalSettings({ ...localSettings, amapKey: e.target.value })}
+                placeholder="填写高德 Web服务 Key"
+                className="glass-input w-full text-sm"
+              />
+              <p className="text-white/30 text-xs mt-1.5 leading-relaxed">
+                用于让角色查询附近外卖、奶茶、咖啡店和天气。Key 类型必须是「Web服务」。
+                <a 
+                  href="https://console.amap.com/" 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="text-blue-400/70 hover:text-blue-400 underline ml-1"
+                >
+                  去高德申请 →
+                </a>
+              </p>
+            </div>
+          </div>
         </section>
 
         {/* TTS 设置 */}
