@@ -1,3 +1,41 @@
+// ==================== MCP 相关 ====================
+
+export type MCPTransportType = 'sse' | 'http';
+
+export interface MCPConnection {
+  id: string;
+  name: string;
+  transport: MCPTransportType;
+  url: string;
+  apiKey?: string;
+  headers?: Record<string, string>;
+  enabled: boolean;
+  createdAt: number;
+}
+
+export interface MCPTool {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+export interface MCPResource {
+  uri: string;
+  name: string;
+  description?: string;
+}
+
+export type MCPConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
+
+export interface MCPConnectionState {
+  connectionId: string;
+  status: MCPConnectionStatus;
+  error?: string;
+  tools: MCPTool[];
+  resources: MCPResource[];
+  lastConnectedAt?: number;
+}
+
 // ==================== 角色相关 ====================
 
 export type RelationshipStage = 'stranger' | 'acquaintance' | 'friend' | 'close' | 'intimate';
@@ -11,10 +49,10 @@ export interface EmotionCoordinate {
 
 export interface CharacterState {
   characterId: string;
-  mood: string;          // 心情底色，如"刚被甲方气到""心情不错"
-  emotionalResidue: string; // 上次聊天结束时的情绪残留
-  currentActivity: string;  // 当前在做什么，如"刚睡醒""在吃饭"（由用户或AI设定，非自动计算）
-  stateUpdatedAt: number;   // 状态最后更新时间
+  mood: string;
+  emotionalResidue: string;
+  currentActivity: string;
+  stateUpdatedAt: number;
 }
 
 // ==================== 日程系统（预留，未来做独立App）====================
@@ -24,10 +62,10 @@ export type ActivityType = 'work' | 'rest' | 'leisure' | 'sleep' | 'meal' | 'com
 export interface ScheduleItem {
   id: string;
   characterId: string;
-  dayOfWeek: number;      // 0-6, 0=周日
-  startTime: string;      // "HH:mm"
-  endTime: string;        // "HH:mm"
-  activity: string;       // 活动名称
+  dayOfWeek: number;
+  startTime: string;
+  endTime: string;
+  activity: string;
   activityType: ActivityType;
   description?: string;
 }
@@ -117,7 +155,8 @@ export type AppID =
   | 'diary'
   | 'spark'
   | 'worldbook'
-  | 'gallery';
+  | 'gallery'
+  | 'mcp';
 
 export interface AppDefinition {
   id: AppID;
@@ -148,6 +187,7 @@ export interface SystemSettings {
   wallpaper: string;
   memoryEngine: MemoryEngineConfig;
   lastApp?: AppID;
+  mcpConnections: MCPConnection[];
 }
 
 // ==================== 通知 ====================

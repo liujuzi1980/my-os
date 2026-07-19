@@ -2,7 +2,8 @@ import { useState, useRef, useEffect } from 'react';
 import { useOSStore } from '@/context/OSStore';
 import { 
   Key, Globe, Mic, Save, Download, Upload, Trash2, ChevronRight, User, 
-  RefreshCw, Check, ChevronDown, AlertCircle, WifiOff, ShieldAlert
+  RefreshCw, Check, ChevronDown, AlertCircle, WifiOff, ShieldAlert,
+  Plug
 } from 'lucide-react';
 import { exportAllData, importAllData } from '@/db';
 
@@ -12,7 +13,7 @@ interface ModelInfo {
 }
 
 export default function SettingsApp() {
-  const { settings, updateSettings, userProfile, updateUserProfile } = useOSStore();
+  const { settings, updateSettings, userProfile, updateUserProfile, setCurrentApp } = useOSStore();
   const [localSettings, setLocalSettings] = useState(settings);
   const [localProfile, setLocalProfile] = useState(userProfile);
   const [saveStatus, setSaveStatus] = useState('');
@@ -64,7 +65,6 @@ export default function SettingsApp() {
       });
 
       if (!response.ok) {
-        // 401 = Key 错误，403 = 无权限，其他 = 服务端错误
         if (response.status === 401) {
           throw new Error('API Key 无效或已过期');
         } else if (response.status === 403) {
@@ -77,7 +77,6 @@ export default function SettingsApp() {
       const data = await response.json();
       const modelList: ModelInfo[] = data.data || [];
 
-      // 过滤掉 embedding 等非聊天模型
       const chatModels = modelList
         .filter((m: ModelInfo) => {
           const id = m.id.toLowerCase();
@@ -106,9 +105,7 @@ export default function SettingsApp() {
     } catch (error) {
       const msg = error instanceof Error ? error.message : '未知错误';
 
-      // 判断错误类型
       if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('network')) {
-        // 手机端 CORS 最典型的表现：fetch 直接抛错，连 response 都拿不到
         setModelErrorType('cors');
         setModelError('请求被浏览器拦截，可能是 CORS 跨域限制。建议：1) 换用支持 CORS 的 API；2) 或在电脑上配置后同步到手机');
       } else if (msg.includes('Key') || msg.includes('401') || msg.includes('403')) {
@@ -171,6 +168,10 @@ export default function SettingsApp() {
       default: return <AlertCircle size={14} className="text-red-400 flex-shrink-0" />;
     }
   };
+
+  // MCP 连接数量
+  const mcpCount = settings.mcpConnections?.length || 0;
+  const enabledMcpCount = settings.mcpConnections?.filter(c => c.enabled).length || 0;
 
   return (
     <div className="flex flex-col h-full overflow-y-auto">
@@ -291,6 +292,33 @@ export default function SettingsApp() {
               )}
             </div>
           </div>
+        </section>
+
+        {/* MCP 服务入口 */}
+        <section>
+          <h2 className="text-white/50 text-xs font-medium uppercase tracking-wider mb-3 flex items-center gap-2">
+            <Plug size={14} /> MCP 服务
+          </h2>
+          <button
+            onClick={() => setCurrentApp('mcp')}
+            className="glass-card w-full p-4 flex items-center justify-between text-left hover:bg-white/10 transition-colors"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-orange-500/20 flex items-center justify-center">
+                <Plug size={20} className="text-orange-400" />
+              </div>
+              <div>
+                <p className="text-white/80 text-sm font-medium">MCP 连接管理</p>
+                <p className="text-white/30 text-xs">
+                  {mcpCount === 0 
+                    ? '未配置 MCP 服务' 
+                    : `${mcpCount} 个连接 · ${enabledMcpCount} 个已启用`
+                  }
+                </p>
+              </div>
+            </div>
+            <ChevronRight size={16} className="text-white/30" />
+          </button>
         </section>
 
         {/* TTS 设置 */}

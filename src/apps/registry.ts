@@ -5,6 +5,7 @@ import type { AppID, AppDefinition } from '@/types';
 const MessageApp = lazy(() => import('./Message'));
 const SettingsApp = lazy(() => import('./Settings'));
 const CharacterManagerApp = lazy(() => import('./CharacterManager'));
+const MCPApp = lazy(() => import('./MCP'));
 
 // 占位组件（未实现的 App）
 const PlaceholderApp = lazy(() => import('./Placeholder'));
@@ -79,6 +80,13 @@ export const APP_REGISTRY: Record<AppID, AppDefinition> = {
     icon: 'Image',
     color: '#14b8a6',
     component: PlaceholderApp,
+  },
+  mcp: {
+    id: 'mcp',
+    name: 'MCP',
+    icon: 'Plug',
+    color: '#f97316',
+    component: MCPApp,
   },
 };
 

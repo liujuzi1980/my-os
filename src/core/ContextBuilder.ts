@@ -1,4 +1,4 @@
-import type { Character, CharacterState, ChatMessage, UserProfile } from '@/types';
+import type { Character, CharacterState, ChatMessage, UserProfile, MCPConnection, MCPTool } from '@/types';
 import { getChatsByCharacter } from '@/db';
 
 export interface BuildResult {
@@ -13,6 +13,7 @@ export interface BuildResult {
  * 1. 心情、情绪余波、当前活动注入系统提示词
  * 2. 离线感知（30分钟阈值，性格化回复）
  * 3. 对话轮数15轮
+ * 4. MCP 工具描述注入
  * 
  * 移除：
  * - 精力系统
@@ -22,15 +23,27 @@ export class ContextBuilder {
   private character: Character;
   private state: CharacterState;
   private userProfile?: UserProfile;
+  private mcpTools?: { connectionName: string; tools: MCPTool[] }[];
 
-  constructor(character: Character, state: CharacterState, userProfile?: UserProfile) {
+  constructor(
+    character: Character, 
+    state: CharacterState, 
+    userProfile?: UserProfile,
+    mcpTools?: { connectionName: string; tools: MCPTool[] }[]
+  ) {
     this.character = character;
     this.state = state;
     this.userProfile = userProfile;
+    this.mcpTools = mcpTools;
   }
 
-  static create(character: Character, state: CharacterState, userProfile?: UserProfile): ContextBuilder {
-    return new ContextBuilder(character, state, userProfile);
+  static create(
+    character: Character, 
+    state: CharacterState, 
+    userProfile?: UserProfile,
+    mcpTools?: { connectionName: string; tools: MCPTool[] }[]
+  ): ContextBuilder {
+    return new ContextBuilder(character, state, userProfile, mcpTools);
   }
 
   /**
@@ -62,7 +75,6 @@ export class ContextBuilder {
         hour: '2-digit',
         minute: '2-digit',
       });
-      // 系统消息不加时间戳
       if (msg.role === 'system') {
         context.push({ role: msg.role, content: msg.content });
       } else {
@@ -186,6 +198,31 @@ export class ContextBuilder {
     }
     parts.push('');
 
+    // ===== MCP 工具描述 =====
+    if (this.mcpTools && this.mcpTools.length > 0) {
+      parts.push('【你可以使用的工具】');
+      parts.push('当用户需要你执行某些操作时，你可以使用以下工具。使用格式：');
+      parts.push('```tool');
+      parts.push('{');
+      parts.push('  "tool": "工具名称",');
+      parts.push('  "arguments": { ...参数... }');
+      parts.push('}');
+      parts.push('```');
+      parts.push('');
+
+      for (const conn of this.mcpTools) {
+        if (conn.tools.length > 0) {
+          parts.push(`--- ${conn.connectionName} ---`);
+          for (const tool of conn.tools) {
+            parts.push(`工具：${tool.name}`);
+            parts.push(`描述：${tool.description}`);
+            parts.push('');
+          }
+        }
+      }
+      parts.push('');
+    }
+
     // ===== 语言习惯 =====
     parts.push('【你的说话习惯】');
     parts.push('- 每段2-4句话，像真人微信打字。允许不完美、允许没get到、允许沉默。');
@@ -236,7 +273,6 @@ export class ContextBuilder {
     const offlineHours = offlineMinutes / 60;
     const offlineDays = offlineHours / 24;
 
-    // 阈值：30分钟以上才触发
     if (offlineMinutes < 30) return '';
 
     let duration = '';
@@ -255,7 +291,6 @@ export class ContextBuilder {
     const userName = this.userProfile?.name || '对方';
     const c = this.character;
 
-    // 根据好感度给不同的情绪方向
     let emotionDirection = '';
     const affection = c.affection || 50;
 

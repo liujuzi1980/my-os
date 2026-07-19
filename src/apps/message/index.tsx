@@ -3,10 +3,12 @@ import { useOSStore } from '@/context/OSStore';
 import { getChatsByCharacter, saveChatMessage, deleteAllChats, exportAllData } from '@/db';
 import { ContextBuilder } from '@/core/ContextBuilder';
 import { MemoryEngine } from '@/core/MemoryEngine';
+import { mcpManager } from '@/core/MCPClientManager';
 import { 
   Send, Image, Phone, ChevronLeft, MoreVertical, Bot, 
   RotateCcw, Trash2, Copy, X, AlertTriangle, Check,
-  Quote, Edit3, Star, Layers, ArrowLeft, Download
+  Quote, Edit3, Star, Layers, ArrowLeft, Download,
+  Wrench, Loader2
 } from 'lucide-react';
 import type { ChatMessage, MessageRole } from '@/types';
 
@@ -17,6 +19,12 @@ interface MessageMenuItem {
   label: string;
   icon: React.ReactNode;
   danger?: boolean;
+}
+
+interface ToolCall {
+  connectionId: string;
+  toolName: string;
+  arguments: Record<string, unknown>;
 }
 
 // ==================== 常量 ====================
@@ -39,6 +47,37 @@ const AI_MENU_ITEMS: MessageMenuItem[] = [
   { key: 'multiSelect', label: '多选', icon: <Layers size={15} /> },
   { key: 'delete', label: '删除', icon: <Trash2 size={15} />, danger: true },
 ];
+
+// ==================== 工具调用解析 ====================
+
+function parseToolCalls(content: string): { text: string; toolCalls: ToolCall[] } {
+  const toolCallRegex = /```tool\s*\n([\s\S]*?)\n```/g;
+  const toolCalls: ToolCall[] = [];
+  let text = content;
+  let match;
+
+  while ((match = toolCallRegex.exec(content)) !== null) {
+    try {
+      const parsed = JSON.parse(match[1]);
+      if (parsed.tool && parsed.arguments) {
+        toolCalls.push({
+          connectionId: parsed.connectionId || '',
+          toolName: parsed.tool,
+          arguments: parsed.arguments,
+        });
+        text = text.replace(match[0], '');
+      }
+    } catch {
+      // 解析失败，保留原文
+    }
+  }
+
+  return { text: text.trim(), toolCalls };
+}
+
+function buildToolResultPrompt(toolName: string, result: unknown): string {
+  return `[工具调用结果]\n工具：${toolName}\n结果：${JSON.stringify(result, null, 2)}\n请根据以上结果继续回复用户。`;
+}
 
 // ==================== 消息气泡组件 ====================
 
@@ -227,6 +266,24 @@ function MessageBubble({
   );
 }
 
+// ==================== 工具调用中组件 ====================
+
+function ToolCallIndicator({ toolName }: { toolName: string }) {
+  return (
+    <div className="flex items-start gap-2">
+      <div className="w-7 h-7 rounded-full bg-gradient-to-br from-orange-400 to-red-500 flex items-center justify-center text-white text-xs font-bold flex-shrink-0 mt-1">
+        <Wrench size={14} />
+      </div>
+      <div className="message-bubble-ai py-3 px-4">
+        <div className="flex items-center gap-2">
+          <Loader2 size={14} className="text-orange-400 animate-spin" />
+          <span className="text-sm text-white/70">正在调用工具：{toolName}...</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ==================== 主组件 ====================
 
 export default function MessageApp() {
@@ -240,11 +297,15 @@ export default function MessageApp() {
     setCurrentApp,
     setIsLoading,
     updateCharacter,
+    mcpConnectionStates,
+    mcpConnections,
   } = useOSStore();
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [isToolCalling, setIsToolCalling] = useState(false);
+  const [currentToolName, setCurrentToolName] = useState('');
 
   const [openMenuMsgId, setOpenMenuMsgId] = useState<string | null>(null);
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
@@ -288,7 +349,7 @@ export default function MessageApp() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isTyping]);
+  }, [messages, isTyping, isToolCalling]);
 
   const loadMessages = async () => {
     if (!activeCharacterId) return;
@@ -296,9 +357,26 @@ export default function MessageApp() {
     setMessages(chats);
   };
 
-  // ==================== LLM 调用（简化版）====================
+  // 获取已连接且启用的 MCP 工具
+  const getConnectedMCPTools = useCallback(() => {
+    const result: { connectionName: string; connectionId: string; tools: import('@/types').MCPTool[] }[] = [];
+    for (const conn of mcpConnections) {
+      if (!conn.enabled) continue;
+      const state = mcpConnectionStates[conn.id];
+      if (state?.status === 'connected' && state.tools.length > 0) {
+        result.push({
+          connectionName: conn.name,
+          connectionId: conn.id,
+          tools: state.tools,
+        });
+      }
+    }
+    return result;
+  }, [mcpConnections, mcpConnectionStates]);
 
-  const callLLM = async (): Promise<{ content: string | null; error?: string }> => {
+  // ==================== LLM 调用 ====================
+
+  const callLLM = async (extraSystemMessages?: Array<{ role: string; content: string }>): Promise<{ content: string | null; error?: string }> => {
     if (!character) {
       return { content: null, error: '未选择角色' };
     }
@@ -328,13 +406,25 @@ export default function MessageApp() {
       }
 
       const isFirstMessage = isFirstMessageRef.current;
-      const builder = ContextBuilder.create(character, state, userProfile);
+      const mcpTools = getConnectedMCPTools();
+      const builder = ContextBuilder.create(character, state, userProfile, mcpTools);
       const { messages: contextMessages, newState } = await builder.buildCoreContext(isFirstMessage, 15);
+
+      // 如果有额外的系统消息（如工具调用结果），插入到最后一条系统消息之后
+      if (extraSystemMessages && extraSystemMessages.length > 0) {
+        const systemIndex = contextMessages.findLastIndex(m => m.role === 'system');
+        if (systemIndex >= 0) {
+          contextMessages.splice(systemIndex + 1, 0, ...extraSystemMessages);
+        } else {
+          contextMessages.unshift(...extraSystemMessages);
+        }
+      }
 
       console.log('[LLM 请求]', {
         url: settings.apiBaseUrl,
         model: settings.model,
         messageCount: contextMessages.length,
+        mcpTools: mcpTools.map(t => ({ name: t.connectionName, toolCount: t.tools.length })),
       });
 
       const response = await fetch(`${settings.apiBaseUrl}/chat/completions`, {
@@ -388,6 +478,74 @@ export default function MessageApp() {
     }
   };
 
+  // ==================== 处理工具调用 ====================
+
+  const handleToolCalls = async (content: string): Promise<string> => {
+    const { text, toolCalls } = parseToolCalls(content);
+
+    if (toolCalls.length === 0) {
+      return content;
+    }
+
+    const extraSystemMessages: Array<{ role: string; content: string }> = [];
+
+    for (const toolCall of toolCalls) {
+      // 查找对应的 connectionId（如果未指定，尝试在所有已连接中查找）
+      let targetConnectionId = toolCall.connectionId;
+
+      if (!targetConnectionId) {
+        // 尝试通过工具名查找连接
+        for (const conn of mcpConnections) {
+          const state = mcpConnectionStates[conn.id];
+          if (state?.status === 'connected' && state.tools.some(t => t.name === toolCall.toolName)) {
+            targetConnectionId = conn.id;
+            break;
+          }
+        }
+      }
+
+      if (!targetConnectionId) {
+        extraSystemMessages.push({
+          role: 'system',
+          content: `[工具调用失败]\n工具：${toolCall.toolName}\n错误：找不到可用的 MCP 连接`,
+        });
+        continue;
+      }
+
+      setIsToolCalling(true);
+      setCurrentToolName(toolCall.toolName);
+
+      try {
+        const result = await mcpManager.callTool(targetConnectionId, toolCall.toolName, toolCall.arguments);
+        extraSystemMessages.push({
+          role: 'system',
+          content: buildToolResultPrompt(toolCall.toolName, result),
+        });
+      } catch (e: any) {
+        extraSystemMessages.push({
+          role: 'system',
+          content: `[工具调用失败]\n工具：${toolCall.toolName}\n错误：${e.message || '调用失败'}`,
+        });
+      } finally {
+        setIsToolCalling(false);
+        setCurrentToolName('');
+      }
+    }
+
+    // 如果有工具调用结果，再次请求 LLM 生成最终回复
+    if (extraSystemMessages.length > 0) {
+      const { content: finalContent, error } = await callLLM(extraSystemMessages);
+      if (finalContent) {
+        return finalContent;
+      }
+      if (error) {
+        return `${text}\n\n（工具调用后处理失败：${error}）`;
+      }
+    }
+
+    return text;
+  };
+
   // ==================== 发送消息 ====================
 
   const sendMessage = useCallback(async () => {
@@ -426,11 +584,14 @@ export default function MessageApp() {
       return;
     }
 
+    // 处理可能的工具调用
+    const finalContent = await handleToolCalls(aiContent);
+
     const aiMsg: ChatMessage = {
       id: crypto.randomUUID(),
       characterId: character.id,
       role: 'assistant',
-      content: aiContent,
+      content: finalContent,
       timestamp: Date.now(),
     };
     await saveChatMessage(aiMsg);
@@ -457,7 +618,7 @@ export default function MessageApp() {
         console.error('[Memory] background dehydration failed:', e);
       }
     })();
-  }, [inputText, character, settings, activeCharacterId, quotingMsg, userProfile, getCharacterState, updateCharacterState]);
+  }, [inputText, character, settings, activeCharacterId, quotingMsg, userProfile, getCharacterState, updateCharacterState, mcpConnections, mcpConnectionStates]);
 
   // ==================== 消息操作 ====================
 
@@ -502,12 +663,10 @@ export default function MessageApp() {
   const handleRegenerate = async (msg: ChatMessage) => {
     if (!character) return;
 
-    // 删除这条AI消息
     const db = await import('@/db').then(m => m.getDB());
     await db.delete('chats', msg.id);
     setMessages(prev => prev.filter(m => m.id !== msg.id));
 
-    // 标记为重新生成
     setIsTyping(true);
     setIsLoading(true);
 
@@ -523,8 +682,8 @@ export default function MessageApp() {
         };
       }
 
-      // 重roll时不是第一条消息，不注入离线感知
-      const builder = ContextBuilder.create(character, state, userProfile);
+      const mcpTools = getConnectedMCPTools();
+      const builder = ContextBuilder.create(character, state, userProfile, mcpTools);
       const { messages: contextMessages, newState } = await builder.buildCoreContext(false, 15);
 
       const response = await fetch(`${settings.apiBaseUrl}/chat/completions`, {
@@ -536,7 +695,7 @@ export default function MessageApp() {
         body: JSON.stringify({
           model: settings.model,
           messages: contextMessages,
-          temperature: 0.9, // 重roll时提高temperature让回复更不同
+          temperature: 0.9,
           max_tokens: 2000,
         }),
       });
@@ -573,9 +732,11 @@ export default function MessageApp() {
         return;
       }
 
-      const aiContent = data.choices[0].message.content;
+      let aiContent = data.choices[0].message.content;
 
-      // 更新状态时间戳
+      // 处理可能的工具调用
+      aiContent = await handleToolCalls(aiContent);
+
       await updateCharacterState(character.id, newState);
 
       const aiMsg: ChatMessage = {
@@ -730,6 +891,13 @@ export default function MessageApp() {
     });
   };
 
+  // 获取已启用的 MCP 连接数
+  const enabledMcpCount = mcpConnections.filter(c => c.enabled).length;
+  const connectedMcpCount = mcpConnections.filter(c => {
+    const state = mcpConnectionStates[c.id];
+    return c.enabled && state?.status === 'connected';
+  }).length;
+
   if (!character) {
     return (
       <div className="flex flex-col h-full items-center justify-center">
@@ -773,6 +941,21 @@ export default function MessageApp() {
               </div>
             </div>
             <div className="flex items-center gap-1">
+              {/* MCP 状态指示 */}
+              {enabledMcpCount > 0 && (
+                <button
+                  onClick={() => setCurrentApp('mcp')}
+                  className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs transition-colors ${
+                    connectedMcpCount > 0 
+                      ? 'bg-green-500/10 text-green-400' 
+                      : 'bg-white/5 text-white/30'
+                  }`}
+                  title="MCP 连接状态"
+                >
+                  <Wrench size={12} />
+                  {connectedMcpCount}/{enabledMcpCount}
+                </button>
+              )}
               <button 
                 onClick={async () => {
                   const data = await exportAllData();
@@ -811,6 +994,12 @@ export default function MessageApp() {
             <p className="text-sm">开始和 {character.name} 聊天吧</p>
             {character.affection !== undefined && character.affection <= 15 && (
               <p className="text-white/20 text-xs mt-2">你们还不太熟，{character.name} 会比较客气</p>
+            )}
+            {connectedMcpCount > 0 && (
+              <p className="text-green-400/40 text-xs mt-1 flex items-center gap-1">
+                <Wrench size={10} />
+                {connectedMcpCount} 个 MCP 工具可用
+              </p>
             )}
           </div>
         )}
@@ -854,7 +1043,13 @@ export default function MessageApp() {
           );
         })}
 
-        {isTyping && (
+        {/* 工具调用中指示器 */}
+        {isToolCalling && (
+          <ToolCallIndicator toolName={currentToolName} />
+        )}
+
+        {/* AI 输入中指示器 */}
+        {isTyping && !isToolCalling && (
           <div className="flex items-start gap-2">
             <div className="w-7 h-7 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
               {character.name[0]}
@@ -920,8 +1115,8 @@ export default function MessageApp() {
               />
               <button
                 onClick={sendMessage}
-                disabled={!inputText.trim() || isTyping}
-                className={`p-2.5 rounded-full transition-all flex-shrink-0 ${inputText.trim() && !isTyping ? 'bg-gradient-to-r from-blue-500 to-purple-500 hover:opacity-90' : 'bg-white/5 cursor-not-allowed'}`}
+                disabled={!inputText.trim() || isTyping || isToolCalling}
+                className={`p-2.5 rounded-full transition-all flex-shrink-0 ${inputText.trim() && !isTyping && !isToolCalling ? 'bg-gradient-to-r from-blue-500 to-purple-500 hover:opacity-90' : 'bg-white/5 cursor-not-allowed'}`}
               >
                 <Send size={18} className="text-white" />
               </button>

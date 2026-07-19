@@ -1,7 +1,8 @@
 import { openDB, DBSchema, IDBPDatabase } from 'idb';
 import type { 
   Character, ChatMessage, SystemSettings, WorldBook, UserProfile,
-  MemoryEntry, LifeStageSummary, CharacterState, ScheduleItem 
+  MemoryEntry, LifeStageSummary, CharacterState, ScheduleItem,
+  MCPConnection
 } from '@/types';
 
 interface MyOSDB extends DBSchema {
@@ -33,10 +34,14 @@ interface MyOSDB extends DBSchema {
     value: ScheduleItem;
     indexes: { 'by-character': string };
   };
+  mcpConnections: {
+    key: string;
+    value: MCPConnection;
+  };
 }
 
 const DB_NAME = 'MyOS_v2';
-const DB_VERSION = 1;
+const DB_VERSION = 5;
 
 let dbPromise: Promise<IDBPDatabase<MyOSDB>> | null = null;
 
@@ -85,6 +90,11 @@ export function getDB(): Promise<IDBPDatabase<MyOSDB>> {
         if (!db.objectStoreNames.contains('schedules')) {
           const store = db.createObjectStore('schedules', { keyPath: 'id' });
           store.createIndex('by-character', 'characterId');
+        }
+      }
+      if (oldVersion < 5) {
+        if (!db.objectStoreNames.contains('mcpConnections')) {
+          db.createObjectStore('mcpConnections', { keyPath: 'id' });
         }
       }
     },
@@ -241,6 +251,28 @@ export async function saveLifeStageSummary(summary: LifeStageSummary): Promise<v
   await db.put('lifeStageSummaries', summary);
 }
 
+// ==================== MCP 连接 CRUD ====================
+
+export async function getAllMCPConnections(): Promise<MCPConnection[]> {
+  const db = await getDB();
+  return db.getAll('mcpConnections');
+}
+
+export async function getMCPConnection(id: string): Promise<MCPConnection | undefined> {
+  const db = await getDB();
+  return db.get('mcpConnections', id);
+}
+
+export async function saveMCPConnection(connection: MCPConnection): Promise<void> {
+  const db = await getDB();
+  await db.put('mcpConnections', connection);
+}
+
+export async function deleteMCPConnection(id: string): Promise<void> {
+  const db = await getDB();
+  await db.delete('mcpConnections', id);
+}
+
 // ==================== 设置 CRUD ====================
 
 const DEFAULT_SETTINGS: SystemSettings = {
@@ -251,6 +283,7 @@ const DEFAULT_SETTINGS: SystemSettings = {
   theme: 'dark',
   wallpaper: 'default',
   memoryEngine: { type: 'local' },
+  mcpConnections: [],
 };
 
 export async function getSettings(): Promise<SystemSettings> {
@@ -309,12 +342,13 @@ export async function exportAllData(): Promise<Record<string, unknown[]>> {
     lifeStageSummaries: await db.getAll('lifeStageSummaries'),
     characterStates: await db.getAll('characterStates'),
     schedules: await db.getAll('schedules'),
+    mcpConnections: await db.getAll('mcpConnections'),
   };
 }
 
 export async function importAllData(data: Record<string, unknown[]>): Promise<void> {
   const db = await getDB();
-  const stores = ['characters', 'chats', 'settings', 'worldbooks', 'userProfile', 'memories', 'lifeStageSummaries', 'characterStates', 'schedules'] as const;
+  const stores = ['characters', 'chats', 'settings', 'worldbooks', 'userProfile', 'memories', 'lifeStageSummaries', 'characterStates', 'schedules', 'mcpConnections'] as const;
   for (const storeName of stores) {
     const tx = db.transaction(storeName, 'readwrite');
     await tx.store.clear();
