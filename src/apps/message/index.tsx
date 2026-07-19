@@ -355,6 +355,10 @@ export default function MessageApp() {
   // 高德地图数据缓存
   const poiDataRef = useRef<ChatMessage['poiData']>(undefined);
   const weatherDataRef = useRef<ChatMessage['weatherData']>(undefined);
+  // 缓存最近一次 geocode 结果，用于自动补调周边搜索或修正 AI 传错的坐标
+  const lastGeocodeRef = useRef<{ lng: number; lat: number } | null>(null);
+  // 缓存当前用户查询内容（绕过 React 状态异步，确保自动补调能读到正确的关键词）
+  const lastUserQueryRef = useRef<string>('');
   const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
   const [quotingMsg, setQuotingMsg] = useState<ChatMessage | null>(null);
@@ -455,13 +459,23 @@ export default function MessageApp() {
       const builder = ContextBuilder.create(character, state, userProfile, mcpTools);
       const { messages: contextMessages, newState } = await builder.buildCoreContext(isFirstMessage, 15);
 
-      // === 注入高德地图工具描述（仅初次调用）===
-      if (!extraSystemMessages || extraSystemMessages.length === 0) {
-        const amapDesc = getAmapToolDescriptions();
-        const systemIndex = contextMessages.findLastIndex(m => m.role === 'system');
-        if (systemIndex >= 0) {
+      // === 注入高德地图工具描述和系统提示 ===
+      const systemIndex = contextMessages.findLastIndex(m => m.role === 'system');
+      if (systemIndex >= 0) {
+        // 工具描述只在初次调用时注入（没有额外系统消息时认为是初次）
+        if (!extraSystemMessages || extraSystemMessages.length === 0) {
+          const amapDesc = getAmapToolDescriptions();
           contextMessages.splice(systemIndex + 1, 0, { role: 'system', content: amapDesc });
         }
+        // 系统提示每次都要注入，确保 AI 知道如何基于工具结果回复用户
+        const lastSystemIndex = contextMessages.findLastIndex(m => m.role === 'system');
+        contextMessages.splice(lastSystemIndex + 1, 0, {
+          role: 'system',
+          content: `【地图工具使用原则】
+1. 查地点坐标用 amap_geocode，搜周边用 amap_search_nearby。
+2. 搜周边时 location 参数必须用 geocode 返回的坐标，不要猜。
+3. 高德对商场内部店铺覆盖不全，如实汇报搜索结果即可，搜不到就直说。`
+        });
       }
 
       // 如果有额外的系统消息（如工具调用结果），插入到最后一条系统消息之后
@@ -557,16 +571,68 @@ export default function MessageApp() {
         setIsToolCalling(true);
         setCurrentToolName(toolCall.toolName);
         try {
-          const result = await callAmapTool(settings.amapKey || '', toolCall.toolName, toolCall.arguments);
-          extraSystemMessages.push({
-            role: 'system',
-            content: buildToolResultPrompt(toolCall.toolName, result),
-          });
-          // 保存卡片数据到 ref
-          if (toolCall.toolName === 'amap_search_nearby') {
+          let result = await callAmapTool(settings.amapKey || '', toolCall.toolName, toolCall.arguments);
+
+          // ===== 保存 geocode 结果，并自动补调周边搜索 =====
+          if (toolCall.toolName === 'amap_geocode') {
+            const r = result as any;
+            if (r.location) {
+              const [lng, lat] = String(r.location).split(',').map(Number);
+              if (!isNaN(lng) && !isNaN(lat)) {
+                lastGeocodeRef.current = { lng, lat };
+              }
+            }
+
+            // 判断用户是否在问周边/里面有什么（通用匹配，不硬编码关键词）
+            const userContent = lastUserQueryRef.current;
+            const isNearbyQuery = /附近|周边|周围|旁边|里面|内|有什么|有啥|有哪些|店|铺|商家/.test(userContent);
+
+            if (isNearbyQuery && lastGeocodeRef.current) {
+              setCurrentToolName('amap_search_nearby');
+              const searchArgs: Record<string, unknown> = {
+                location: `${lastGeocodeRef.current.lng},${lastGeocodeRef.current.lat}`,
+                radius: 500,
+              };
+
+              console.log('[amap] 自动补调周边搜索，坐标:', searchArgs.location);
+
+              const searchResult = await callAmapTool(settings.amapKey || '', 'amap_search_nearby', searchArgs);
+
+              // 保存 POI 卡片数据（最多10条，让AI自己筛选）
+              const sr = searchResult as any;
+              if (sr.results && Array.isArray(sr.results)) {
+                poiDataRef.current = sr.results.slice(0, 10).map((item: any) => ({
+                  name: item.name || '',
+                  address: item.address || '',
+                  distance: item.distance || '',
+                  rating: item.rating || '',
+                  tel: item.tel || '',
+                }));
+              }
+
+              extraSystemMessages.push({
+                role: 'system',
+                content: buildToolResultPrompt('amap_search_nearby', searchResult),
+              });
+            }
+          }
+
+          // ===== 防御性修正 search_nearby 的坐标（如果 AI 自己调了）=====
+          if (toolCall.toolName === 'amap_search_nearby' && lastGeocodeRef.current && toolCall.arguments.location) {
+            const [aiLng, aiLat] = String(toolCall.arguments.location).split(',').map(Number);
+            if (!isNaN(aiLng) && !isNaN(aiLat)) {
+              const dist = Math.abs(aiLng - lastGeocodeRef.current.lng) + Math.abs(aiLat - lastGeocodeRef.current.lat);
+              if (dist > 0.01) {
+                console.log(`[amap] 自动修正 search_nearby 坐标: ${toolCall.arguments.location} -> ${lastGeocodeRef.current.lng},${lastGeocodeRef.current.lat}`);
+                toolCall.arguments.location = `${lastGeocodeRef.current.lng},${lastGeocodeRef.current.lat}`;
+                result = await callAmapTool(settings.amapKey || '', toolCall.toolName, toolCall.arguments);
+              }
+            }
+
+            // 保存 POI 卡片数据
             const r = result as any;
             if (r.results && Array.isArray(r.results)) {
-              poiDataRef.current = r.results.slice(0, 5).map((item: any) => ({
+              poiDataRef.current = r.results.slice(0, 10).map((item: any) => ({
                 name: item.name || '',
                 address: item.address || '',
                 distance: item.distance || '',
@@ -575,6 +641,13 @@ export default function MessageApp() {
               }));
             }
           }
+
+          extraSystemMessages.push({
+            role: 'system',
+            content: buildToolResultPrompt(toolCall.toolName, result),
+          });
+
+          // 保存天气卡片数据
           if (toolCall.toolName === 'amap_weather') {
             const r = result as any;
             if (r.live) {
@@ -667,6 +740,9 @@ export default function MessageApp() {
     }
 
     setInputText('');
+
+    // 缓存当前用户查询，供自动补调逻辑读取（避免 React 状态异步导致读到旧消息）
+    lastUserQueryRef.current = content;
 
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
