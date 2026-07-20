@@ -53,6 +53,11 @@ export interface CharacterState {
   emotionalResidue: string;
   currentActivity: string;
   stateUpdatedAt: number;
+  // === 情感坐标 + 心声（新增）===
+  valence?: number;        // -1.0 ~ 1.0
+  arousal?: number;        // 0.0 ~ 1.0
+  innerMonologue?: string; // 心声（内心戏）
+  emotionHistory?: Array<{ valence: number; arousal: number; timestamp: number; trigger: string }>;
 }
 
 // ==================== 日程系统（预留，未来做独立App）====================
@@ -143,6 +148,7 @@ export interface ChatMessage {
   isRegenerated?: boolean;
   poiData?: Array<{ name: string; address: string; distance?: string; rating?: string; tel?: string }>;
   weatherData?: { city?: string; weather?: string; temperature?: string; wind?: string; humidity?: string };
+  innerMonologue?: string; // 新增：心声（内心戏）
 }
 
 // ==================== App 相关 ====================
@@ -246,4 +252,20 @@ export interface DehydratedMemory {
   importance: number;
   domain: string;
   feel?: string;
+}
+
+// ==================== 情感系统类型（新增）====================
+
+export interface EmotionHistoryPoint {
+  valence: number;
+  arousal: number;
+  timestamp: number;
+  trigger: string;
+}
+
+export interface ParsedAIResponse {
+  reply: string;
+  thought?: string;
+  valence?: number;
+  arousal?: number;
 }

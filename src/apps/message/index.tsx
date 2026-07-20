@@ -4,6 +4,9 @@ import { getChatsByCharacter, saveChatMessage, deleteAllChats, exportAllData } f
 import { ContextBuilder } from '@/core/ContextBuilder';
 import { MemoryEngine } from '@/core/MemoryEngine';
 import { mcpManager } from '@/core/MCPClientManager';
+import { parseAIResponse } from './parser';
+import { InnerMonologue } from '@/components/InnerMonologue';
+import { deriveMood, smoothEmotion } from '@/core/EmotionUtils';
 import { 
   Send, Image, Phone, ChevronLeft, MoreVertical, Bot, 
   RotateCcw, Trash2, Copy, X, AlertTriangle, Check,
@@ -48,6 +51,19 @@ const AI_MENU_ITEMS: MessageMenuItem[] = [
   { key: 'multiSelect', label: '多选', icon: <Layers size={15} /> },
   { key: 'delete', label: '删除', icon: <Trash2 size={15} />, danger: true },
 ];
+
+// ==================== 情感颜色工具（本地定义，避免外部依赖缺失）====================
+
+function getEmotionColor(valence: number, arousal: number): string {
+  if (valence > 0.3 && arousal > 0.5) return '#f59e0b'; // 兴奋 - amber
+  if (valence > 0.3 && arousal <= 0.5) return '#10b981'; // 满足 - emerald
+  if (valence > 0 && arousal > 0.5) return '#8b5cf6';    // 期待 - violet
+  if (valence <= 0 && arousal > 0.5) return '#ef4444';   // 焦虑 - red
+  if (valence < -0.3 && arousal > 0.5) return '#dc2626'; // 愤怒 - dark red
+  if (valence < -0.3 && arousal <= 0.5) return '#6b7280'; // 沮丧 - gray
+  if (valence < 0 && arousal <= 0.5) return '#64748b';   // 疲惫 - slate
+  return '#3b82f6'; // 平静 - blue
+}
 
 // ==================== 工具调用解析 ====================
 
@@ -126,7 +142,7 @@ function MessageBubble({
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [isMenuOpen]);
+  }, [isMenuOpen, onCloseMenu]);
 
   useEffect(() => {
     if (isMenuOpen && bubbleRef.current) {
@@ -249,14 +265,18 @@ function MessageBubble({
                 transition-all duration-150
               `}
             >
-              <p className="text-sm leading-relaxed whitespace-pre-wrap">{cleanToolBlocks(msg.content)}</p>
+              <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">{cleanToolBlocks(msg.content)}</p>
               {msg.isRegenerated && (
                 <span className="text-[10px] text-yellow-400/60 mt-1 block">已重新生成</span>
               )}
             </div>
+            {/* 心声 */}
+            {msg.role === 'assistant' && msg.innerMonologue && (
+              <InnerMonologue thought={msg.innerMonologue} />
+            )}
             {/* POI 卡片 */}
             {msg.poiData && msg.poiData.length > 0 && (
-              <div className="mt-2 space-y-1.5">
+              <div className="mt-2 space-y-1.5 max-w-full">
                 {msg.poiData.map((poi, i) => (
                   <div key={i} className="bg-white/5 border border-white/10 rounded-lg p-2.5">
                     <div className="flex items-center justify-between">
@@ -274,7 +294,7 @@ function MessageBubble({
             )}
             {/* 天气卡片 */}
             {msg.weatherData && (
-              <div className="mt-2 bg-gradient-to-br from-blue-500/10 to-purple-500/10 border border-white/10 rounded-xl p-3">
+              <div className="mt-2 bg-gradient-to-br from-blue-500/10 to-purple-500/10 border border-white/10 rounded-xl p-3 max-w-full">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-white/40 text-xs">{msg.weatherData.city}</p>
@@ -355,9 +375,7 @@ export default function MessageApp() {
   // 高德地图数据缓存
   const poiDataRef = useRef<ChatMessage['poiData']>(undefined);
   const weatherDataRef = useRef<ChatMessage['weatherData']>(undefined);
-  // 缓存最近一次 geocode 结果，用于自动补调周边搜索或修正 AI 传错的坐标
   const lastGeocodeRef = useRef<{ lng: number; lat: number } | null>(null);
-  // 缓存当前用户查询内容（绕过 React 状态异步，确保自动补调能读到正确的关键词）
   const lastUserQueryRef = useRef<string>('');
   const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
@@ -368,6 +386,7 @@ export default function MessageApp() {
   const [deleteMsgId, setDeleteMsgId] = useState<string | null>(null);
   const [copyFeedbackId, setCopyFeedbackId] = useState<string | null>(null);
   const [favoriteFeedbackId, setFavoriteFeedbackId] = useState<string | null>(null);
+  const [currentEmotion, setCurrentEmotion] = useState<{ valence: number; arousal: number } | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -384,7 +403,7 @@ export default function MessageApp() {
       const updated = ContextBuilder.updateLastVisit(character);
       updateCharacter(updated);
     }
-  }, [activeCharacterId]);
+  }, [activeCharacterId, character, updateCharacter]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -405,6 +424,16 @@ export default function MessageApp() {
     const chats = await getChatsByCharacter(activeCharacterId, 100);
     setMessages(chats);
   };
+
+  // 加载角色情感状态
+  useEffect(() => {
+    if (character) {
+      const s = getCharacterState(character.id);
+      if (s?.valence !== undefined && s?.arousal !== undefined) {
+        setCurrentEmotion({ valence: s.valence, arousal: s.arousal });
+      }
+    }
+  }, [character?.id, getCharacterState]);
 
   // 获取已连接且启用的 MCP 工具
   const getConnectedMCPTools = useCallback(() => {
@@ -462,12 +491,10 @@ export default function MessageApp() {
       // === 注入高德地图工具描述和系统提示 ===
       const systemIndex = contextMessages.findLastIndex(m => m.role === 'system');
       if (systemIndex >= 0) {
-        // 工具描述只在初次调用时注入（没有额外系统消息时认为是初次）
         if (!extraSystemMessages || extraSystemMessages.length === 0) {
           const amapDesc = getAmapToolDescriptions();
           contextMessages.splice(systemIndex + 1, 0, { role: 'system', content: amapDesc });
         }
-        // 系统提示每次都要注入，确保 AI 知道如何基于工具结果回复用户
         const lastSystemIndex = contextMessages.findLastIndex(m => m.role === 'system');
         contextMessages.splice(lastSystemIndex + 1, 0, {
           role: 'system',
@@ -478,7 +505,6 @@ export default function MessageApp() {
         });
       }
 
-      // 如果有额外的系统消息（如工具调用结果），插入到最后一条系统消息之后
       if (extraSystemMessages && extraSystemMessages.length > 0) {
         const systemIndex = contextMessages.findLastIndex(m => m.role === 'system');
         if (systemIndex >= 0) {
@@ -527,7 +553,6 @@ export default function MessageApp() {
 
       const aiContent = data.choices[0].message.content;
 
-      // 更新状态时间戳
       await updateCharacterState(character.id, newState);
 
       return { content: aiContent };
@@ -558,7 +583,6 @@ export default function MessageApp() {
     const extraSystemMessages: Array<{ role: string; content: string }> = [];
 
     for (const toolCall of toolCalls) {
-      // === 高德地图工具（直接 API 调用，不走 MCP）===
       if (toolCall.toolName.startsWith('amap_')) {
         const knownTools = ['amap_geocode', 'amap_search_nearby', 'amap_weather'];
         if (!knownTools.includes(toolCall.toolName)) {
@@ -573,7 +597,6 @@ export default function MessageApp() {
         try {
           let result = await callAmapTool(settings.amapKey || '', toolCall.toolName, toolCall.arguments);
 
-          // ===== 保存 geocode 结果，并自动补调周边搜索 =====
           if (toolCall.toolName === 'amap_geocode') {
             const r = result as any;
             if (r.location) {
@@ -583,7 +606,6 @@ export default function MessageApp() {
               }
             }
 
-            // 判断用户是否在问周边/里面有什么（通用匹配，不硬编码关键词）
             const userContent = lastUserQueryRef.current;
             const isNearbyQuery = /附近|周边|周围|旁边|里面|内|有什么|有啥|有哪些|店|铺|商家/.test(userContent);
 
@@ -598,7 +620,6 @@ export default function MessageApp() {
 
               const searchResult = await callAmapTool(settings.amapKey || '', 'amap_search_nearby', searchArgs);
 
-              // 保存 POI 卡片数据（最多10条，让AI自己筛选）
               const sr = searchResult as any;
               if (sr.results && Array.isArray(sr.results)) {
                 poiDataRef.current = sr.results.slice(0, 10).map((item: any) => ({
@@ -617,7 +638,6 @@ export default function MessageApp() {
             }
           }
 
-          // ===== 防御性修正 search_nearby 的坐标（如果 AI 自己调了）=====
           if (toolCall.toolName === 'amap_search_nearby' && lastGeocodeRef.current && toolCall.arguments.location) {
             const [aiLng, aiLat] = String(toolCall.arguments.location).split(',').map(Number);
             if (!isNaN(aiLng) && !isNaN(aiLat)) {
@@ -629,7 +649,6 @@ export default function MessageApp() {
               }
             }
 
-            // 保存 POI 卡片数据
             const r = result as any;
             if (r.results && Array.isArray(r.results)) {
               poiDataRef.current = r.results.slice(0, 10).map((item: any) => ({
@@ -647,7 +666,6 @@ export default function MessageApp() {
             content: buildToolResultPrompt(toolCall.toolName, result),
           });
 
-          // 保存天气卡片数据
           if (toolCall.toolName === 'amap_weather') {
             const r = result as any;
             if (r.live) {
@@ -672,11 +690,9 @@ export default function MessageApp() {
         continue;
       }
 
-      // 查找对应的 connectionId（如果未指定，尝试在所有已连接中查找）
       let targetConnectionId = toolCall.connectionId;
 
       if (!targetConnectionId) {
-        // 尝试通过工具名查找连接
         for (const conn of mcpConnections) {
           const state = mcpConnectionStates[conn.id];
           if (state?.status === 'connected' && state.tools.some(t => t.name === toolCall.toolName)) {
@@ -714,7 +730,6 @@ export default function MessageApp() {
       }
     }
 
-    // 如果有工具调用结果，再次请求 LLM 生成最终回复
     if (extraSystemMessages.length > 0) {
       const { content: finalContent, error } = await callLLM(extraSystemMessages);
       if (finalContent) {
@@ -741,7 +756,6 @@ export default function MessageApp() {
 
     setInputText('');
 
-    // 缓存当前用户查询，供自动补调逻辑读取（避免 React 状态异步导致读到旧消息）
     lastUserQueryRef.current = content;
 
     const userMsg: ChatMessage = {
@@ -769,24 +783,51 @@ export default function MessageApp() {
       return;
     }
 
-    // 处理可能的工具调用
-    const finalContent = await handleToolCalls(aiContent);
+    const parsed = parseAIResponse(aiContent);
+    const finalContent = parsed.reply;
+
+    const currentState = getCharacterState(character.id);
+    if (currentState && (parsed.valence !== undefined || parsed.arousal !== undefined)) {
+      const newValence = parsed.valence !== undefined 
+        ? smoothEmotion(currentState.valence ?? 0, parsed.valence, 0.3)
+        : currentState.valence;
+      const newArousal = parsed.arousal !== undefined
+        ? smoothEmotion(currentState.arousal ?? 0.3, parsed.arousal, 0.3)
+        : currentState.arousal;
+      await updateCharacterState(character.id, {
+        ...currentState,
+        valence: newValence,
+        arousal: newArousal,
+        innerMonologue: parsed.thought || currentState.innerMonologue,
+        mood: deriveMood(newValence ?? 0, newArousal ?? 0.3),
+        stateUpdatedAt: Date.now(),
+      });
+      console.log('[Emotion]', {
+        mood: deriveMood(newValence ?? 0, newArousal ?? 0.3),
+        v: newValence,
+        a: newArousal,
+        thought: parsed.thought,
+      });
+      setCurrentEmotion({ valence: newValence ?? 0, arousal: newArousal ?? 0.3 });
+    }
+
+    const finalContent2 = await handleToolCalls(finalContent);
 
     const aiMsg: ChatMessage = {
       id: crypto.randomUUID(),
       characterId: character.id,
       role: 'assistant',
-      content: finalContent,
+      content: finalContent2,
       timestamp: Date.now(),
       poiData: poiDataRef.current,
       weatherData: weatherDataRef.current,
+      innerMonologue: parsed.thought,
     };
     poiDataRef.current = undefined;
     weatherDataRef.current = undefined;
     await saveChatMessage(aiMsg);
     setMessages(prev => [...prev, aiMsg]);
 
-    // 第一条消息已处理，后续不再注入离线感知
     isFirstMessageRef.current = false;
 
     // [MEMORY] 异步脱水
@@ -807,7 +848,7 @@ export default function MessageApp() {
         console.error('[Memory] background dehydration failed:', e);
       }
     })();
-  }, [inputText, character, settings, activeCharacterId, quotingMsg, userProfile, getCharacterState, updateCharacterState, mcpConnections, mcpConnectionStates]);
+  }, [inputText, character, settings, activeCharacterId, quotingMsg, userProfile, getCharacterState, updateCharacterState, mcpConnections, mcpConnectionStates, updateCharacter]);
 
   // ==================== 消息操作 ====================
 
@@ -847,7 +888,7 @@ export default function MessageApp() {
     setMessages(prev => prev.filter(m => m.id !== msgId).concat(recallNotice));
   };
 
-  // ==================== 重roll（重新生成）====================
+  // ==================== 重roll ====================
 
   const handleRegenerate = async (msg: ChatMessage) => {
     if (!character) return;
@@ -923,7 +964,29 @@ export default function MessageApp() {
 
       let aiContent = data.choices[0].message.content;
 
-      // 处理可能的工具调用
+      const parsed = parseAIResponse(aiContent);
+      if (parsed.thought || parsed.valence !== undefined || parsed.arousal !== undefined) {
+        aiContent = parsed.reply;
+        const currentState = getCharacterState(character.id);
+        if (currentState) {
+          const newValence = parsed.valence !== undefined 
+            ? smoothEmotion(currentState.valence ?? 0, parsed.valence, 0.3)
+            : currentState.valence;
+          const newArousal = parsed.arousal !== undefined
+            ? smoothEmotion(currentState.arousal ?? 0.3, parsed.arousal, 0.3)
+            : currentState.arousal;
+          await updateCharacterState(character.id, {
+            ...currentState,
+            valence: newValence,
+            arousal: newArousal,
+            innerMonologue: parsed.thought || currentState.innerMonologue,
+            mood: deriveMood(newValence ?? 0, newArousal ?? 0.3),
+            stateUpdatedAt: Date.now(),
+          });
+          setCurrentEmotion({ valence: newValence ?? 0, arousal: newArousal ?? 0.3 });
+        }
+      }
+
       aiContent = await handleToolCalls(aiContent);
 
       await updateCharacterState(character.id, newState);
@@ -937,6 +1000,7 @@ export default function MessageApp() {
         isRegenerated: true,
         poiData: poiDataRef.current,
         weatherData: weatherDataRef.current,
+        innerMonologue: parsed.thought,
       };
       poiDataRef.current = undefined;
       weatherDataRef.current = undefined;
@@ -1084,7 +1148,6 @@ export default function MessageApp() {
     });
   };
 
-  // 获取已启用的 MCP 连接数
   const enabledMcpCount = mcpConnections.filter(c => c.enabled).length;
   const connectedMcpCount = mcpConnections.filter(c => {
     const state = mcpConnectionStates[c.id];
@@ -1104,8 +1167,8 @@ export default function MessageApp() {
   }
 
   return (
-    <div className="flex flex-col h-full bg-gradient-to-b from-[#1a1a2e]/50 to-transparent relative">
-      {/* 顶部栏 */}
+    <div className="flex flex-col h-full w-full overflow-hidden bg-gradient-to-b from-[#1a1a2e]/50 to-transparent relative">
+      {/* ==================== 顶部栏 ==================== */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-white/5 flex-shrink-0">
         {isMultiSelectMode ? (
           <div className="flex items-center gap-3 flex-1">
@@ -1119,22 +1182,54 @@ export default function MessageApp() {
           </div>
         ) : (
           <>
-            <div className="flex items-center gap-3">
-              <button onClick={() => setCurrentApp('character')} className="p-1.5 rounded-full hover:bg-white/10 transition-colors lg:hidden">
+            {/* 左侧：头像 + 角色信息 */}
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <button onClick={() => setCurrentApp('character')} className="p-1.5 rounded-full hover:bg-white/10 transition-colors lg:hidden flex-shrink-0">
                 <ChevronLeft size={20} className="text-white/70" />
               </button>
-              <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center text-white text-sm font-bold">
-                {character.name[0]}
+              
+              <div className="relative flex-shrink-0">
+                <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center text-white text-sm font-bold">
+                  {character.name[0]}
+                </div>
+                {/* 情感角标：颜色反映情绪，悬停看数值 */}
+                {currentEmotion && (
+                  <div 
+                    className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-[#1a1a2e] z-10"
+                    style={{ backgroundColor: getEmotionColor(currentEmotion.valence, currentEmotion.arousal) }}
+                    title={`${deriveMood(currentEmotion.valence, currentEmotion.arousal)} (v:${currentEmotion.valence.toFixed(2)}, a:${currentEmotion.arousal.toFixed(2)})`}
+                  />
+                )}
               </div>
-              <div>
-                <p className="text-white/90 font-medium text-sm">{character.name}</p>
-                <p className="text-white/40 text-xs flex items-center gap-1">
-                  {isTyping ? '正在输入...' : <><span className="w-1.5 h-1.5 rounded-full bg-green-400 inline-block" />在线</>}
+              
+              <div className="min-w-0">
+                <p className="text-white/90 font-medium text-sm truncate">{character.name}</p>
+                <p className="text-white/40 text-xs flex items-center gap-1.5">
+                  {isTyping ? (
+                    <span className="text-blue-400">正在输入...</span>
+                  ) : (
+                    <>
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-400 inline-block flex-shrink-0" />
+                      <span>在线</span>
+                    </>
+                  )}
+                  {currentEmotion && (
+                    <span 
+                      className="px-1.5 py-0.5 rounded text-[10px] font-medium flex-shrink-0"
+                      style={{ 
+                        backgroundColor: `${getEmotionColor(currentEmotion.valence, currentEmotion.arousal)}20`,
+                        color: getEmotionColor(currentEmotion.valence, currentEmotion.arousal)
+                      }}
+                    >
+                      {deriveMood(currentEmotion.valence, currentEmotion.arousal)}
+                    </span>
+                  )}
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-1">
-              {/* MCP 状态指示 */}
+
+            {/* 右侧：工具按钮 */}
+            <div className="flex items-center gap-1 flex-shrink-0">
               {enabledMcpCount > 0 && (
                 <button
                   onClick={() => setCurrentApp('mcp')}
@@ -1179,8 +1274,8 @@ export default function MessageApp() {
         )}
       </div>
 
-      {/* 消息列表 */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 space-y-4">
+      {/* ==================== 消息列表 ==================== */}
+      <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 px-4 py-4 space-y-4">
         {messages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-white/30">
             <Bot size={40} className="mb-3 opacity-50" />
@@ -1197,7 +1292,7 @@ export default function MessageApp() {
           </div>
         )}
 
-        {messages.map((msg, index) => {
+        {messages.map((msg) => {
           if (msg.role === 'system') {
             return (
               <div key={msg.id} className="text-center my-2">
@@ -1236,12 +1331,10 @@ export default function MessageApp() {
           );
         })}
 
-        {/* 工具调用中指示器 */}
         {isToolCalling && (
           <ToolCallIndicator toolName={currentToolName} />
         )}
 
-        {/* AI 输入中指示器 */}
         {isTyping && !isToolCalling && (
           <div className="flex items-start gap-2">
             <div className="w-7 h-7 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
@@ -1260,7 +1353,7 @@ export default function MessageApp() {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* 多选模式底部操作栏 */}
+      {/* ==================== 多选模式底部栏 ==================== */}
       {isMultiSelectMode && (
         <div className="dock-blur px-4 py-3 flex items-center justify-center border-t border-white/5 flex-shrink-0">
           <button
@@ -1278,7 +1371,7 @@ export default function MessageApp() {
         </div>
       )}
 
-      {/* 普通输入框 */}
+      {/* ==================== 普通输入框 ==================== */}
       {!isMultiSelectMode && (
         <div className="flex-shrink-0">
           {quotingMsg && (
@@ -1304,7 +1397,7 @@ export default function MessageApp() {
                 onChange={(e) => setInputText(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder={quotingMsg ? '回复引用...' : '输入消息...'}
-                className="glass-input flex-1 text-sm"
+                className="glass-input flex-1 text-sm min-w-0"
               />
               <button
                 onClick={sendMessage}
@@ -1318,7 +1411,7 @@ export default function MessageApp() {
         </div>
       )}
 
-      {/* 清空对话确认弹窗 */}
+      {/* ==================== 清空对话确认弹窗 ==================== */}
       {showClearConfirm && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="glass-panel p-6 max-w-xs mx-4">
@@ -1335,7 +1428,7 @@ export default function MessageApp() {
         </div>
       )}
 
-      {/* 删除确认弹窗 */}
+      {/* ==================== 删除确认弹窗 ==================== */}
       {showDeleteConfirm && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="glass-panel p-6 max-w-xs mx-4">

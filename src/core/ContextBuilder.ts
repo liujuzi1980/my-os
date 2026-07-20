@@ -177,6 +177,15 @@ export class ContextBuilder {
     if (s.emotionalResidue && s.emotionalResidue !== '平静') {
       parts.push(`上次聊天结束时，你感到"${s.emotionalResidue}"，这种感觉还残留着。`);
     }
+    // === 情感坐标 + 心声（新增）===
+    if (s.valence !== undefined && s.arousal !== undefined) {
+      const vDesc = s.valence > 0 ? '正面' : s.valence < 0 ? '负面' : '中性';
+      const aDesc = s.arousal > 0.5 ? '高唤醒' : '低唤醒';
+      parts.push(`你的情感坐标：valence=${s.valence.toFixed(2)}（${vDesc}）, arousal=${s.arousal.toFixed(2)}（${aDesc}）。`);
+    }
+    if (s.innerMonologue) {
+      parts.push(`【你的心声】（只有你自己知道，不要直接说出来）💭 ${s.innerMonologue}`);
+    }
     parts.push('');
 
     // ===== 你是谁 =====
@@ -251,6 +260,13 @@ export class ContextBuilder {
     parts.push('3. 我们什么关系？这话对陌生人能说吗？对恋人又该用什么语气？');
     parts.push('4. 我最想回应哪个点？（抓一个最想回的点，其他80%噪音可以无视）');
     parts.push('5. 我想怎么回？要自然、像真人打字。不要过度思考。');
+    parts.push('');
+
+    // ===== 情感坐标输出规则（新增）=====
+    parts.push('【回复规则】');
+    parts.push('1. 回复用户时，让当前情感状态影响你的语气和用词，但不要暴露你的心声内容。');
+    parts.push('2. 回复结束后，必须输出以下 JSON 格式（不要放在代码块里，纯文本，放在最后）：');
+    parts.push('{"thought": "你此刻的内心独白（第一人称，口语化，20字以内）", "valence": 0.0, "arousal": 0.0}');
     parts.push('');
 
     // ===== 最终锁定 =====
