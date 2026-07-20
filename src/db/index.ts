@@ -2,7 +2,7 @@ import { openDB, DBSchema, IDBPDatabase } from 'idb';
 import type { 
   Character, ChatMessage, SystemSettings, WorldBook, UserProfile,
   MemoryEntry, LifeStageSummary, CharacterState, ScheduleItem,
-  MCPConnection
+  MCPConnection, ImageRecord
 } from '@/types';
 
 interface MyOSDB extends DBSchema {
@@ -38,12 +38,48 @@ interface MyOSDB extends DBSchema {
     key: string;
     value: MCPConnection;
   };
+  images: {
+    key: string;
+    value: ImageRecord;
+    indexes: { 'by-character': string; 'by-message': string };
+  };
 }
 
 const DB_NAME = 'MyOS_v2';
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 
 let dbPromise: Promise<IDBPDatabase<MyOSDB>> | null = null;
+
+/**
+ * 标准化记忆条目 —— 自动补全阶段 2 新增字段的默认值
+ * 确保旧数据（缺少新字段）读取后也能正常使用
+ */
+function normalizeMemoryEntry(m: MemoryEntry): MemoryEntry {
+  const now = Date.now();
+  const valence = m.valence ?? m.emotion?.valence ?? 0;
+  const arousal = m.arousal ?? m.emotion?.arousal ?? 0.3;
+  const pinned = m.pinned ?? m.isPinned ?? false;
+
+  return {
+    ...m,
+    emotion: m.emotion || { valence, arousal },
+    valence,
+    arousal,
+    resolved: m.resolved ?? false,
+    pinned,
+    lastAccessed: m.lastAccessed ?? m.createdAt ?? now,
+    lastSurfaced: m.lastSurfaced ?? 0,
+    domain: m.domain ?? 'daily',
+    tags: m.tags ?? [],
+    status: m.status ?? 'active',
+    archived: m.archived ?? (m.status === 'archived'),
+    source: m.source ?? 'auto',
+    sourceMessageIds: m.sourceMessageIds ?? m.relatedMessageIds ?? [],
+    relatedMemoryIds: m.relatedMemoryIds ?? [],
+    isPinned: pinned,
+    accessCount: m.accessCount ?? 0,
+  };
+}
 
 export function getDB(): Promise<IDBPDatabase<MyOSDB>> {
   if (dbPromise) return dbPromise;
@@ -97,6 +133,14 @@ export function getDB(): Promise<IDBPDatabase<MyOSDB>> {
           db.createObjectStore('mcpConnections', { keyPath: 'id' });
         }
       }
+      // === 阶段 2：新增 images store ===
+      if (oldVersion < 6) {
+        if (!db.objectStoreNames.contains('images')) {
+          const store = db.createObjectStore('images', { keyPath: 'id' });
+          store.createIndex('by-character', 'characterId');
+          store.createIndex('by-message', 'messageId');
+        }
+      }
     },
   });
 
@@ -123,20 +167,36 @@ export async function saveCharacter(character: Character): Promise<void> {
 export async function deleteCharacter(id: string): Promise<void> {
   const db = await getDB();
   await db.delete('characters', id);
+
+  // 级联删除聊天记录
   const allChats = await getChatsByCharacter(id);
   const tx = db.transaction('chats', 'readwrite');
   for (const chat of allChats) await tx.store.delete(chat.id);
   await tx.done;
+
+  // 级联删除记忆
   const allMemories = await getMemoriesByCharacter(id);
   const tx2 = db.transaction('memories', 'readwrite');
   for (const m of allMemories) await tx2.store.delete(m.id);
   await tx2.done;
+
+  // 级联删除人生阶段总结
   const allSummaries = await getLifeStageSummaries(id);
   const tx3 = db.transaction('lifeStageSummaries', 'readwrite');
   for (const s of allSummaries) await tx3.store.delete(s.id);
   await tx3.done;
+
+  // 级联删除角色状态
   await deleteCharacterState(id);
+
+  // 级联删除日程
   await deleteSchedulesByCharacter(id);
+
+  // 级联删除图片记录
+  const allImages = await getImageRecordsByCharacter(id);
+  const tx4 = db.transaction('images', 'readwrite');
+  for (const img of allImages) await tx4.store.delete(img.id);
+  await tx4.done;
 }
 
 // ==================== 角色状态 CRUD ====================
@@ -204,14 +264,26 @@ export async function deleteAllChats(characterId: string): Promise<void> {
   await tx.done;
 }
 
-// ==================== 记忆系统 CRUD ====================
+// ==================== 记忆系统 CRUD（阶段 2 改造）====================
 
+/**
+ * 获取角色的所有记忆（已标准化，兼容旧数据）
+ */
 export async function getMemoriesByCharacter(characterId: string, tier?: string): Promise<MemoryEntry[]> {
   const db = await getDB();
   const index = db.transaction('memories').store.index('by-character');
   let all = await index.getAll(characterId);
   if (tier) all = all.filter(m => m.tier === tier);
-  return all.sort((a, b) => b.lastAccessed - a.lastAccessed);
+  return all
+    .map(normalizeMemoryEntry)
+    .sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
+}
+
+/**
+ * 获取角色的所有记忆（别名，语义更清晰）
+ */
+export async function getAllMemoriesForCharacter(characterId: string): Promise<MemoryEntry[]> {
+  return getMemoriesByCharacter(characterId);
 }
 
 export async function saveMemory(memory: MemoryEntry): Promise<void> {
@@ -219,21 +291,74 @@ export async function saveMemory(memory: MemoryEntry): Promise<void> {
   await db.put('memories', memory);
 }
 
+/**
+ * 保存记忆（标准化后存储，确保数据一致性）
+ */
+export async function saveMemoryV2(memory: MemoryEntry): Promise<void> {
+  const db = await getDB();
+  await db.put('memories', normalizeMemoryEntry(memory));
+}
+
 export async function deleteMemory(id: string): Promise<void> {
   const db = await getDB();
   await db.delete('memories', id);
 }
 
+/**
+ * 更新记忆访问时间（兼容旧方法）
+ */
 export async function updateMemoryAccess(id: string): Promise<void> {
   const db = await getDB();
   const m = await db.get('memories', id);
   if (m) {
-    m.lastAccessed = Date.now();
-    m.accessCount = (m.accessCount || 0) + 1;
-    await db.put('memories', m);
+    const normalized = normalizeMemoryEntry(m);
+    normalized.lastAccessed = Date.now();
+    normalized.accessCount = (normalized.accessCount || 0) + 1;
+    await db.put('memories', normalized);
   }
 }
 
+/**
+ * 部分更新记忆的指定字段
+ */
+export async function updateMemoryPartial(id: string, updates: Partial<MemoryEntry>): Promise<void> {
+  const db = await getDB();
+  const existing = await db.get('memories', id);
+  if (!existing) return;
+  const updated = normalizeMemoryEntry({
+    ...existing,
+    ...updates,
+    lastAccessed: Date.now(),
+  });
+  await db.put('memories', updated);
+}
+
+/**
+ * 按领域筛选记忆
+ */
+export async function getMemoriesByDomain(characterId: string, domain: string): Promise<MemoryEntry[]> {
+  const all = await getAllMemoriesForCharacter(characterId);
+  return all.filter(m => m.domain === domain);
+}
+
+/**
+ * 关键词搜索记忆（简单包含匹配，不依赖外部库）
+ */
+export async function searchMemoriesByKeyword(characterId: string, keyword: string): Promise<MemoryEntry[]> {
+  const all = await getAllMemoriesForCharacter(characterId);
+  if (!keyword.trim()) return all;
+  const lower = keyword.toLowerCase();
+  return all.filter(m => 
+    m.content.toLowerCase().includes(lower) ||
+    (m.tags || []).some(t => t.toLowerCase().includes(lower)) ||
+    (m.domain || '').toLowerCase().includes(lower) ||
+    (m.summary || '').toLowerCase().includes(lower)
+  );
+}
+
+/**
+ * 获取指定层级的记忆数量（兼容旧方法）
+ */
 export async function getMemoryCountByTier(characterId: string, tier: string): Promise<number> {
   const db = await getDB();
   const all = await db.transaction('memories').store.index('by-character').getAll(characterId);
@@ -249,6 +374,35 @@ export async function getLifeStageSummaries(characterId: string): Promise<LifeSt
 export async function saveLifeStageSummary(summary: LifeStageSummary): Promise<void> {
   const db = await getDB();
   await db.put('lifeStageSummaries', summary);
+}
+
+// ==================== 图片 CRUD（阶段 2 新增）====================
+
+export async function saveImageRecord(record: ImageRecord): Promise<void> {
+  const db = await getDB();
+  await db.put('images', record);
+}
+
+export async function getImageRecordsByCharacter(characterId: string): Promise<ImageRecord[]> {
+  const db = await getDB();
+  const index = db.transaction('images').store.index('by-character');
+  return index.getAll(characterId);
+}
+
+export async function getImageRecordsByMessage(messageId: string): Promise<ImageRecord[]> {
+  const db = await getDB();
+  const index = db.transaction('images').store.index('by-message');
+  return index.getAll(messageId);
+}
+
+export async function getImageRecord(id: string): Promise<ImageRecord | undefined> {
+  const db = await getDB();
+  return db.get('images', id);
+}
+
+export async function deleteImageRecord(id: string): Promise<void> {
+  const db = await getDB();
+  await db.delete('images', id);
 }
 
 // ==================== MCP 连接 CRUD ====================
@@ -328,7 +482,7 @@ export async function saveUserProfile(profile: UserProfile): Promise<void> {
   await db.put('userProfile', { ...profile, key: 'main' });
 }
 
-// ==================== 数据导出 ====================
+// ==================== 数据导出（包含 images）====================
 
 export async function exportAllData(): Promise<Record<string, unknown[]>> {
   const db = await getDB();
@@ -343,12 +497,19 @@ export async function exportAllData(): Promise<Record<string, unknown[]>> {
     characterStates: await db.getAll('characterStates'),
     schedules: await db.getAll('schedules'),
     mcpConnections: await db.getAll('mcpConnections'),
+    images: await db.getAll('images'),
   };
 }
 
+// ==================== 数据导入（包含 images）====================
+
 export async function importAllData(data: Record<string, unknown[]>): Promise<void> {
   const db = await getDB();
-  const stores = ['characters', 'chats', 'settings', 'worldbooks', 'userProfile', 'memories', 'lifeStageSummaries', 'characterStates', 'schedules', 'mcpConnections'] as const;
+  const stores = [
+    'characters', 'chats', 'settings', 'worldbooks', 'userProfile',
+    'memories', 'lifeStageSummaries', 'characterStates', 'schedules',
+    'mcpConnections', 'images'
+  ] as const;
   for (const storeName of stores) {
     const tx = db.transaction(storeName, 'readwrite');
     await tx.store.clear();

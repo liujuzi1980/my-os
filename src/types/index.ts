@@ -105,22 +105,53 @@ export interface Character {
 
 export type MemoryTier = 'core' | 'experience' | 'feeling' | 'plan' | 'archive';
 
+/**
+ * 记忆条目 —— 阶段 2 扩充版
+ * 
+ * 所有新增字段均为可选（?），确保 100% 兼容旧数据。
+ * 读取时通过 normalizeMemoryEntry() 自动补全缺失字段的默认值。
+ */
 export interface MemoryEntry {
   id: string;
   characterId: string;
   content: string;
-  tier: MemoryTier;
+  summary?: string;        // 长内容摘要（grow 时生成）
+
+  // === 情感坐标 ===
   emotion: EmotionCoordinate;
-  importance: number;
-  domain: string;
+  valence?: number;        // 冗余，方便计算
+  arousal?: number;
+
+  // === 权重相关（新增）===
+  importance: number;      // 1-10
+  resolved?: boolean;      // 是否已解决（未解决的记忆权重更高）
+  pinned?: boolean;        // 是否钉选（钉选记忆永不衰减）
+
+  // === 时间相关 ===
   createdAt: number;
-  lastAccessed: number;
-  accessCount: number;
+  lastAccessed: number;    // 上次被触碰（引用/检索/修改），语义同 lastTouched
+  lastSurfaced?: number;   // 上次浮现到对话中的时间
+
+  // === 分类 ===
+  tier: MemoryTier;        // 保留兼容旧数据
+  domain?: string;         // 领域：relationship / work / hobby / daily / promise
+  tags?: string[];         // 标签
+
+  // === 归档 ===
   status: 'active' | 'fading' | 'archived';
-  sourceMessageIds: string[];
-  relatedMemoryIds: string[];
-  isPinned: boolean;
+  archived?: boolean;      // 是否已归档（衰减到阈值后自动归档）
+  archiveReason?: string;  // 归档原因：decay / manual / merge
+
+  // === 来源 ===
+  source?: 'auto' | 'manual' | 'dream';
+  sourceMessageIds?: string[];
+  relatedMemoryIds?: string[];
+  relatedMessageIds?: string[];  // 兼容别名
+
+  // === 兼容旧字段 ===
+  isPinned?: boolean;      // 同 pinned，读取旧数据时复制
   feel?: string;
+  accessCount?: number;    // 访问次数（旧字段，保留兼容）
 }
 
 export interface LifeStageSummary {
@@ -132,6 +163,68 @@ export interface LifeStageSummary {
   summary: string;
   keyMemories: string[];
   emotionSnapshot: EmotionCoordinate;
+}
+
+// ==================== 图片元数据（生图功能预留）====================
+
+export interface ImageRecord {
+  id: string;
+  characterId: string;
+  messageId: string;
+
+  // === 存储 ===
+  url: string;              // 图片 URL（当前 base64，未来对象存储）
+  storageType: 'base64' | 'r2' | 'cos';  // 存储类型，便于迁移
+
+  // === 生图相关 ===
+  prompt?: string;          // 生成提示词
+  negativePrompt?: string;  // 反向提示词
+  model?: string;           // 使用的生图模型
+  seed?: number;            // 随机种子
+
+  // === 图片信息 ===
+  width: number;
+  height: number;
+  size: number;             // 文件大小（字节）
+  mimeType: string;
+
+  // === 缩略图 ===
+  thumbnailUrl?: string;    // 缩略图 URL（前端 canvas 生成）
+
+  // === 时间 ===
+  generatedAt: number;
+  expiresAt?: number;       // 临时 URL 过期时间
+}
+
+// ==================== 记忆桶（按领域分组）====================
+
+export interface MemoryBucket {
+  id: string;
+  characterId: string;
+  domain: string;
+  name: string;
+  description: string;
+  memories: MemoryEntry[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+// ==================== 记忆检索选项 ====================
+
+export interface MemorySearchOptions {
+  limit?: number;
+  domains?: string[];
+  valenceRange?: { min: number; max: number };
+  arousalRange?: { min: number; max: number };
+  timeRange?: { start: number; end: number };
+  includeArchived?: boolean;
+  includeResolved?: boolean;
+  excludeIds?: string[];
+}
+
+export interface MemorySearchResult {
+  memory: MemoryEntry;
+  score: number;
 }
 
 // ==================== 消息相关 ====================
@@ -196,6 +289,7 @@ export interface SystemSettings {
   memoryEngine: MemoryEngineConfig;
   lastApp?: AppID;
   mcpConnections: MCPConnection[];
+  amapKey?: string;        // 高德地图 API Key
 }
 
 // ==================== 通知 ====================

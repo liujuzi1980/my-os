@@ -3,6 +3,7 @@ import { useOSStore } from '@/context/OSStore';
 import { getChatsByCharacter, saveChatMessage, deleteAllChats, exportAllData } from '@/db';
 import { ContextBuilder } from '@/core/ContextBuilder';
 import { MemoryEngine } from '@/core/MemoryEngine';
+import { MemoryCore } from '@/core/MemoryCore';
 import { mcpManager } from '@/core/MCPClientManager';
 import { parseAIResponse } from './parser';
 import { InnerMonologue } from '@/components/InnerMonologue';
@@ -13,7 +14,7 @@ import {
   Quote, Edit3, Star, Layers, ArrowLeft, Download,
   Wrench, Loader2
 } from 'lucide-react';
-import type { ChatMessage, MessageRole } from '@/types';
+import type { ChatMessage, MessageRole, MemoryEntry } from '@/types';
 import { getAmapToolDescriptions, callAmapTool } from '@/services/amap';
 
 // ==================== 类型定义 ====================
@@ -98,6 +99,20 @@ function parseToolCalls(content: string): { text: string; toolCalls: ToolCall[] 
 
 function buildToolResultPrompt(toolName: string, result: unknown): string {
   return `[工具调用结果]\n工具：${toolName}\n结果：${JSON.stringify(result, null, 2)}\n请根据以上结果继续回复用户。`;
+}
+
+// ==================== 记忆工具结果构建 ====================
+
+function buildMemoryBreathResult(memories: MemoryEntry[]): string {
+  if (memories.length === 0) {
+    return '[记忆浮现结果] 没有浮现出相关记忆。';
+  }
+  const lines = memories.map(m => {
+    const pin = (m.pinned || m.isPinned) ? '📌' : '';
+    const resolved = (m.resolved ?? false) ? '✅' : '❓';
+    return `${pin}${resolved} ${m.content}`;
+  });
+  return `[记忆浮现结果] 浮现了 ${memories.length} 条记忆：\n${lines.join('\n')}`;
 }
 
 // ==================== 消息气泡组件 ====================
@@ -345,6 +360,116 @@ function ToolCallIndicator({ toolName }: { toolName: string }) {
   );
 }
 
+
+// ==================== 自动记忆提取（前端规则引擎，零 API 消耗）====================
+
+/**
+ * 基于关键词和规则自动提取用户消息中的记忆
+ * 
+ * 不调用 LLM，纯前端规则匹配，零 API 消耗、不限流、响应快。
+ * 覆盖 80% 的常见场景，剩余 20% 靠 AI 主动调用 memory_hold 补充。
+ */
+function autoHoldMemory(
+  userContent: string,
+  characterId: string
+): { recorded: boolean; content?: string; domain?: string; importance?: number } {
+  const text = userContent.trim();
+  if (text.length < 5) return { recorded: false };
+
+  // === 规则 1：明确指令 "记住/记得/别忘了" ===
+  const rememberPattern = /(?:记住|记得|别忘了|记一下|记下来)[，,：:\s]*(.{3,100})/;
+  const rememberMatch = text.match(rememberPattern);
+  if (rememberMatch) {
+    return {
+      recorded: true,
+      content: rememberMatch[1].trim(),
+      domain: 'daily',
+      importance: 7,
+    };
+  }
+
+  // === 规则 2：个人偏好 "喜欢/讨厌/爱/不爱/习惯" ===
+  const preferencePattern = /(?:我|他|她|我们|他们)(?:喜欢|讨厌|爱|不爱|习惯|偏好|热衷|痴迷|受不了|受不了|反感)(.{2,50})/;
+  const preferenceMatch = text.match(preferencePattern);
+  if (preferenceMatch) {
+    return {
+      recorded: true,
+      content: `${text.includes('我') ? '用户' : '对方'}${preferenceMatch[0].match(/喜欢|讨厌|爱|不爱|习惯|偏好|热衷|痴迷|受不了|反感/)?.[0] || '喜欢'}${preferenceMatch[1].trim()}`,
+      domain: 'daily',
+      importance: 6,
+    };
+  }
+
+  // === 规则 3：约定/计划 "明天/下周/下个月/到时候/约好了" ===
+  const planPattern = /(?:明天|后天|下周|下个月|这周末|到时候|约好了|定了|计划|打算|准备|要)(.{2,80})/;
+  const planMatch = text.match(planPattern);
+  if (planMatch) {
+    return {
+      recorded: true,
+      content: `用户${planMatch[0].trim()}`,
+      domain: 'promise',
+      importance: 8,
+    };
+  }
+
+  // === 规则 4：重要事件 "考试/面试/生日/旅行/搬家/聚会" ===
+  const eventKeywords = ['考试', '面试', '生日', '旅行', '旅游', '搬家', '聚会', '聚餐', '约会', '纪念日', '婚礼', '葬礼'];
+  for (const kw of eventKeywords) {
+    if (text.includes(kw)) {
+      // 提取包含关键词的句子
+      const sentencePattern = new RegExp(`[^。！？\n]{0,30}${kw}[^。！？\n]{0,30}`);
+      const sentenceMatch = text.match(sentencePattern);
+      return {
+        recorded: true,
+        content: sentenceMatch ? sentenceMatch[0].trim() : `用户提到了${kw}`,
+        domain: 'daily',
+        importance: 8,
+      };
+    }
+  }
+
+  // === 规则 5：情感表达 "开心/难过/生气/焦虑/紧张/兴奋" ===
+  const emotionKeywords = ['开心', '高兴', '难过', '伤心', '生气', '愤怒', '焦虑', '紧张', '兴奋', '激动', '失望', '沮丧', '疲惫', '累'];
+  for (const kw of emotionKeywords) {
+    if (text.includes(kw)) {
+      const sentencePattern = new RegExp(`[^。！？\n]{0,20}${kw}[^。！？\n]{0,30}`);
+      const sentenceMatch = text.match(sentencePattern);
+      return {
+        recorded: true,
+        content: sentenceMatch ? `用户感到${sentenceMatch[0].trim()}` : `用户感到${kw}`,
+        domain: 'daily',
+        importance: 6,
+      };
+    }
+  }
+
+  // === 规则 6：关系信息 "我男/女朋友/老公/老婆/妈妈/爸爸/朋友叫" ===
+  const relationPattern = /(?:我|他|她)(?:的|和)?(?:男朋友|女朋友|老公|老婆|男票|女票|对象|妈妈|爸爸|父亲|母亲|哥哥|姐姐|弟弟|妹妹|同事|老板|领导|老师|同学)(?:叫|是|姓|名字|名叫)?(.{1,20})/;
+  const relationMatch = text.match(relationPattern);
+  if (relationMatch) {
+    return {
+      recorded: true,
+      content: relationMatch[0].trim(),
+      domain: 'relationship',
+      importance: 7,
+    };
+  }
+
+  // === 规则 7：饮食偏好 "吃/喝/口味/辣/甜/酸/苦" ===
+  const foodPattern = /(?:吃|喝|口味|口味偏|爱吃|不爱吃|喜欢喝|不喜欢喝|常去|经常去)(.{2,40})/;
+  const foodMatch = text.match(foodPattern);
+  if (foodMatch && (text.includes('喜欢') || text.includes('爱') || text.includes('习惯') || text.includes('常'))) {
+    return {
+      recorded: true,
+      content: `用户${foodMatch[0].trim()}`,
+      domain: 'daily',
+      importance: 5,
+    };
+  }
+
+  return { recorded: false };
+}
+
 // ==================== 主组件 ====================
 
 export default function MessageApp() {
@@ -454,7 +579,10 @@ export default function MessageApp() {
 
   // ==================== LLM 调用 ====================
 
-  const callLLM = async (extraSystemMessages?: Array<{ role: string; content: string }>): Promise<{ content: string | null; error?: string }> => {
+  const callLLM = async (
+    extraSystemMessages?: Array<{ role: string; content: string }>,
+    surfacedMemories?: MemoryEntry[]
+  ): Promise<{ content: string | null; error?: string }> => {
     if (!character) {
       return { content: null, error: '未选择角色' };
     }
@@ -485,8 +613,12 @@ export default function MessageApp() {
 
       const isFirstMessage = isFirstMessageRef.current;
       const mcpTools = getConnectedMCPTools();
-      const builder = ContextBuilder.create(character, state, userProfile, mcpTools);
-      const { messages: contextMessages, newState } = await builder.buildCoreContext(isFirstMessage, 15);
+      const builder = ContextBuilder.create(character, state, userProfile, mcpTools, settings);
+      const { messages: contextMessages, newState } = await builder.buildCoreContext(
+        isFirstMessage, 
+        15, 
+        surfacedMemories
+      );
 
       // === 注入高德地图工具描述和系统提示 ===
       const systemIndex = contextMessages.findLastIndex(m => m.role === 'system');
@@ -519,6 +651,7 @@ export default function MessageApp() {
         model: settings.model,
         messageCount: contextMessages.length,
         mcpTools: mcpTools.map(t => ({ name: t.connectionName, toolCount: t.tools.length })),
+        surfacedMemories: surfacedMemories?.length || 0,
       });
 
       const response = await fetch(`${settings.apiBaseUrl}/chat/completions`, {
@@ -583,6 +716,91 @@ export default function MessageApp() {
     const extraSystemMessages: Array<{ role: string; content: string }> = [];
 
     for (const toolCall of toolCalls) {
+      // === 阶段 2：记忆工具（新增）===
+      if (toolCall.toolName.startsWith('memory_')) {
+        if (!character) continue;
+        const memoryCore = new MemoryCore(character.id, settings);
+
+        try {
+          switch (toolCall.toolName) {
+            case 'memory_breath': {
+              const memories = await memoryCore.breath({ 
+                limit: 5, 
+                includeResolved: false 
+              });
+              extraSystemMessages.push({
+                role: 'system',
+                content: buildMemoryBreathResult(memories),
+              });
+              break;
+            }
+            case 'memory_hold': {
+              const args = toolCall.arguments as Record<string, unknown>;
+              const memory = await memoryCore.hold({
+                content: String(args.content || ''),
+                feel: args.feel ? String(args.feel) : undefined,
+                pinned: Boolean(args.pinned),
+                domain: args.domain ? String(args.domain) : undefined,
+                tags: Array.isArray(args.tags) ? args.tags.map(String) : undefined,
+                valence: typeof args.valence === 'number' ? args.valence : undefined,
+                arousal: typeof args.arousal === 'number' ? args.arousal : undefined,
+                importance: typeof args.importance === 'number' ? args.importance : undefined,
+                source: 'auto',
+                relatedMessageIds: [],
+              });
+              extraSystemMessages.push({
+                role: 'system',
+                content: `[记忆已记录] 你记下了：${memory.content}（重要性：${memory.importance}，领域：${memory.domain}）`,
+              });
+              break;
+            }
+            case 'memory_grow': {
+              const args = toolCall.arguments as Record<string, unknown>;
+              const content = String(args.content || '');
+              const memories = await memoryCore.grow(content);
+              extraSystemMessages.push({
+                role: 'system',
+                content: `[记忆已整理] 将内容拆分为 ${memories.length} 条记忆：\n${memories.map(m => `- ${m.content}`).join('\n')}`,
+              });
+              break;
+            }
+            case 'memory_trace': {
+              const args = toolCall.arguments as Record<string, unknown>;
+              const memory = await memoryCore.trace({
+                memoryId: String(args.memoryId || ''),
+                resolved: typeof args.resolved === 'boolean' ? args.resolved : undefined,
+                pinned: typeof args.pinned === 'boolean' ? args.pinned : undefined,
+                valence: typeof args.valence === 'number' ? args.valence : undefined,
+                arousal: typeof args.arousal === 'number' ? args.arousal : undefined,
+                importance: typeof args.importance === 'number' ? args.importance : undefined,
+                domain: typeof args.domain === 'string' ? args.domain : undefined,
+                tags: Array.isArray(args.tags) ? args.tags.map(String) : undefined,
+                content: typeof args.content === 'string' ? args.content : undefined,
+                summary: typeof args.summary === 'string' ? args.summary : undefined,
+              });
+              extraSystemMessages.push({
+                role: 'system',
+                content: `[记忆已修正] ${memory ? `成功更新记忆：${memory.content}` : '记忆未找到'}`,
+              });
+              break;
+            }
+            default: {
+              extraSystemMessages.push({
+                role: 'system',
+                content: `[记忆工具错误] 未知的记忆工具：${toolCall.toolName}。可用工具：memory_breath, memory_hold, memory_grow, memory_trace。`,
+              });
+            }
+          }
+        } catch (e: any) {
+          extraSystemMessages.push({
+            role: 'system',
+            content: `[记忆工具错误] ${toolCall.toolName} 执行失败：${e.message || '未知错误'}`,
+          });
+        }
+        continue;
+      }
+
+      // === 高德地图工具（保留原有逻辑）===
       if (toolCall.toolName.startsWith('amap_')) {
         const knownTools = ['amap_geocode', 'amap_search_nearby', 'amap_weather'];
         if (!knownTools.includes(toolCall.toolName)) {
@@ -690,6 +908,7 @@ export default function MessageApp() {
         continue;
       }
 
+      // === MCP 工具（保留原有逻辑）===
       let targetConnectionId = toolCall.connectionId;
 
       if (!targetConnectionId) {
@@ -733,7 +952,9 @@ export default function MessageApp() {
     if (extraSystemMessages.length > 0) {
       const { content: finalContent, error } = await callLLM(extraSystemMessages);
       if (finalContent) {
-        return finalContent;
+        // 清理 JSON 情感坐标，只保留 reply 正文
+        const parsed = parseAIResponse(finalContent);
+        return parsed.reply;
       }
       if (error) {
         return `${text}\n\n（工具调用后处理失败：${error}）`;
@@ -768,7 +989,48 @@ export default function MessageApp() {
     await saveChatMessage(userMsg);
     setMessages(prev => [...prev, userMsg]);
 
-    const { content: aiContent, error } = await callLLM();
+    // === 阶段 2：自动提取并记录用户消息中的记忆（前端规则引擎）===
+    const autoHeldMemory = autoHoldMemory(content, character.id);
+    if (autoHeldMemory.recorded && autoHeldMemory.content) {
+      (async () => {
+        try {
+          const memoryCore = new MemoryCore(character.id, settings);
+          await memoryCore.hold({
+            content: autoHeldMemory.content!,
+            domain: autoHeldMemory.domain || 'daily',
+            importance: autoHeldMemory.importance || 5,
+            source: 'auto',
+          });
+          console.log('[autoHoldMemory] recorded:', autoHeldMemory.content);
+        } catch (e) {
+          console.error('[autoHoldMemory] save failed:', e);
+        }
+      })();
+    }
+
+    // === 阶段 2：对话开头自动 breath，浮现高权重记忆 ===
+    let surfacedMemories: MemoryEntry[] = [];
+    try {
+      const memoryCore = new MemoryCore(character.id, settings);
+      surfacedMemories = await memoryCore.breath({ limit: 5, includeResolved: false });
+      console.log('[Message] breath surfaced', surfacedMemories.length, 'memories');
+    } catch (e) {
+      console.error('[Message] breath failed:', e);
+    }
+
+    // 构建额外 system messages（包含自动记录的记忆）
+    const extraSystemMessages: Array<{ role: string; content: string }> = [];
+    if (autoHeldMemory.recorded && autoHeldMemory.content) {
+      extraSystemMessages.push({
+        role: 'system',
+        content: `[你刚刚记下了] ${autoHeldMemory.content}。你可以自然地提到这件事，也可以不提。`,
+      });
+    }
+
+    const { content: aiContent, error } = await callLLM(
+      extraSystemMessages.length > 0 ? extraSystemMessages : undefined,
+      surfacedMemories
+    );
 
     if (!aiContent || error) {
       const errorMsg: ChatMessage = {
@@ -830,7 +1092,7 @@ export default function MessageApp() {
 
     isFirstMessageRef.current = false;
 
-    // [MEMORY] 异步脱水
+    // [MEMORY] 异步脱水（保留原有逻辑）
     (async () => {
       try {
         const engine = new MemoryEngine(character.id, settings);
@@ -913,7 +1175,7 @@ export default function MessageApp() {
       }
 
       const mcpTools = getConnectedMCPTools();
-      const builder = ContextBuilder.create(character, state, userProfile, mcpTools);
+      const builder = ContextBuilder.create(character, state, userProfile, mcpTools, settings);
       const { messages: contextMessages, newState } = await builder.buildCoreContext(false, 15);
 
       const response = await fetch(`${settings.apiBaseUrl}/chat/completions`, {
@@ -1187,7 +1449,7 @@ export default function MessageApp() {
               <button onClick={() => setCurrentApp('character')} className="p-1.5 rounded-full hover:bg-white/10 transition-colors lg:hidden flex-shrink-0">
                 <ChevronLeft size={20} className="text-white/70" />
               </button>
-              
+
               <div className="relative flex-shrink-0">
                 <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center text-white text-sm font-bold">
                   {character.name[0]}
@@ -1201,7 +1463,7 @@ export default function MessageApp() {
                   />
                 )}
               </div>
-              
+
               <div className="min-w-0">
                 <p className="text-white/90 font-medium text-sm truncate">{character.name}</p>
                 <p className="text-white/40 text-xs flex items-center gap-1.5">

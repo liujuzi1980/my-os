@@ -3,34 +3,63 @@ import type {
   SystemSettings, DehydratedMemory 
 } from '@/types';
 import { 
-  getMemoriesByCharacter, saveMemory, deleteMemory, 
+  getMemoriesByCharacter, saveMemoryV2, deleteMemory, 
   getLifeStageSummaries, saveLifeStageSummary,
   updateMemoryAccess, getMemoryCountByTier,
 } from '@/db';
 import { MemoryAnalyzer } from './MemoryAnalyzer';
+import { MemoryCore } from './MemoryCore';
+import { MemorySearch } from './MemorySearch';
 
 export interface RetrievalResult {
   memory: MemoryEntry;
   score: number;
 }
 
+/**
+ * MemoryEngine —— 兼容层
+ * 
+ * 保留原有公共接口，内部转发到 MemoryCore / MemorySearch。
+ * 旧代码（如 message/index.tsx）可直接使用，无需修改。
+ * 
+ * 同时暴露 coreEngine / searchEngine 属性，供新代码直接使用新能力。
+ */
 export class MemoryEngine {
   private characterId: string;
   private analyzer: MemoryAnalyzer;
   private settings: SystemSettings;
+  private _core: MemoryCore;
+  private _search: MemorySearch;
 
   constructor(characterId: string, settings: SystemSettings) {
     this.characterId = characterId;
     this.settings = settings;
     this.analyzer = new MemoryAnalyzer(settings);
+    this._core = new MemoryCore(characterId, settings);
+    this._search = new MemorySearch(characterId);
 
     if (settings.memoryEngine?.type === 'ombre') {
       console.warn('[MemoryEngine] Ombre-Brain backend not yet implemented. Falling back to local.');
     }
   }
 
-  // ========== 脱水 & 存储 ==========
+  // ========== 对外暴露 MemoryCore 的新方法（供新代码使用）==========
 
+  get coreEngine(): MemoryCore {
+    return this._core;
+  }
+
+  get searchEngine(): MemorySearch {
+    return this._search;
+  }
+
+  // ========== 脱水 & 存储（保留旧接口，内部适配新格式）==========
+
+  /**
+   * 脱水：分析对话，提取结构化记忆
+   * 
+   * 保留原有 LLM 分析逻辑，但输出格式已适配阶段 2 的新字段。
+   */
   async dehydrate(messages: ChatMessage[]): Promise<MemoryEntry[]> {
     const dehydrated = await this.analyzer.dehydrate(messages);
     const now = Date.now();
@@ -41,88 +70,92 @@ export class MemoryEngine {
       content: d.content,
       tier: d.tier,
       emotion: { valence: d.valence, arousal: d.arousal },
+      valence: d.valence,
+      arousal: d.arousal,
       importance: d.importance,
       domain: d.domain,
       createdAt: now,
       lastAccessed: now,
-      accessCount: 0,
+      lastSurfaced: 0,
       status: 'active' as const,
       sourceMessageIds: messages.map(m => m.id),
       relatedMemoryIds: [],
       isPinned: d.tier === 'core' && d.importance >= 9,
+      pinned: d.tier === 'core' && d.importance >= 9,
+      resolved: false,
+      archived: false,
+      source: 'auto' as const,
+      tags: [],
+      accessCount: 0,
       feel: d.feel,
     }));
   }
 
+  /**
+   * 存储记忆（保留旧接口，内部使用 saveMemoryV2 标准化存储）
+   */
   async storeMemories(memories: MemoryEntry[]): Promise<void> {
     const existing = await getMemoriesByCharacter(this.characterId);
 
     for (const memory of memories) {
+      // 去重：查找相似记忆
       const similar = existing.find(e => 
         e.tier === memory.tier && this.similarity(e.content, memory.content) > 0.7
       );
 
       if (similar && memory.importance > similar.importance) {
+        // 新记忆更重要，替换旧记忆
         await deleteMemory(similar.id);
-        await saveMemory(memory);
-      } else if (!similar) {
-        await saveMemory(memory);
       }
+
+      // 保存（标准化后存储）
+      await saveMemoryV2(memory);
     }
 
+    // 检查是否需要压缩归档
     await this.checkCompression();
   }
 
-  // ========== 混合检索 ==========
+  // ========== 混合检索（使用新 MemorySearch 替代旧算法）==========
 
+  /**
+   * 检索记忆（保留旧接口，内部使用 MemorySearch）
+   */
   async retrieve(
     query: string, 
     currentEmotion: EmotionCoordinate, 
     limit = 15
   ): Promise<{ memories: MemoryEntry[]; summaries: LifeStageSummary[] }> {
-    const allMemories = await getMemoriesByCharacter(this.characterId);
     const summaries = await getLifeStageSummaries(this.characterId);
 
-    const scored = allMemories.map(m => ({
-      memory: m,
-      score: this.calculateScore(m, query, currentEmotion),
-    }));
+    // 使用新的混合检索
+    const results = await this._search.search(query, {
+      limit,
+      includeArchived: false,
+    });
 
-    scored.sort((a, b) => b.score - a.score);
-
-    const top = scored.slice(0, limit);
-    for (const { memory } of top) {
+    // 更新访问记录
+    for (const { memory } of results) {
       await updateMemoryAccess(memory.id);
     }
 
-    return { memories: top.map(r => r.memory), summaries };
+    return { memories: results.map(r => r.memory), summaries };
   }
 
-  // ========== 遗忘衰减 ==========
+  // ========== 遗忘衰减（转发到 MemoryCore，使用新算法）==========
 
+  /**
+   * 遗忘衰减（保留旧接口，内部使用 MemoryCore.decay）
+   */
   async decay(): Promise<void> {
-    const memories = await getMemoriesByCharacter(this.characterId);
-    const now = Date.now();
+    const result = await this._core.decay();
+    console.log('[MemoryEngine] decay result:', result);
 
-    for (const m of memories) {
-      if (m.status === 'archived' || m.isPinned) continue;
-
-      const daysSinceAccess = (now - m.lastAccessed) / 86400000;
-      const emotionalIntensity = Math.sqrt(m.emotion.valence ** 2 + m.emotion.arousal ** 2);
-      const lambda = 0.05 / (1 + emotionalIntensity);
-      const survivalProb = Math.exp(-lambda * daysSinceAccess);
-
-      let newStatus: 'active' | 'fading' | 'archived' = m.status;
-      if (survivalProb < 0.1) newStatus = 'archived';
-      else if (survivalProb < 0.3) newStatus = 'fading';
-
-      if (newStatus !== m.status) {
-        await saveMemory({ ...m, status: newStatus });
-      }
-    }
+    // 保留旧逻辑：压缩归档（当某 tier 记忆过多时）
+    await this.checkCompression();
   }
 
-  // ========== 压缩归档 ==========
+  // ========== 压缩归档（保留旧逻辑）==========
 
   private async checkCompression(): Promise<void> {
     const thresholds: Record<string, number> = {
@@ -164,7 +197,7 @@ export class MemoryEngine {
     await saveLifeStageSummary(summary);
 
     for (const m of toCompress) {
-      await saveMemory({ ...m, status: 'archived' });
+      await saveMemoryV2({ ...m, status: 'archived', archived: true, archiveReason: 'merge' });
     }
   }
 
@@ -177,58 +210,21 @@ export class MemoryEngine {
     return intersection.size / (setA.size + setB.size - intersection.size);
   }
 
-  private calculateScore(
-    memory: MemoryEntry, 
-    query: string, 
-    currentEmotion: EmotionCoordinate
-  ): number {
-    const hoursSinceAccess = (Date.now() - memory.lastAccessed) / 3600000;
-    const timeDecay = Math.exp(-0.05 * hoursSinceAccess);
-
-    const emotionDistance = Math.sqrt(
-      Math.pow(memory.emotion.valence - currentEmotion.valence, 2) +
-      Math.pow(memory.emotion.arousal - currentEmotion.arousal, 2)
-    );
-    const emotionMatch = 1 - emotionDistance / 2.828;
-
-    const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 1);
-    const memoryText = memory.content.toLowerCase();
-    let keywordMatch = 0;
-    if (queryWords.length > 0) {
-      const hits = queryWords.filter(qw => memoryText.includes(qw)).length;
-      keywordMatch = hits / queryWords.length;
-    }
-
-    const baseWeight = memory.importance / 10;
-    const freqBoost = Math.log1p(memory.accessCount) * 0.1;
-    const tierBoost = memory.tier === 'core' ? 2.0 : 
-                      memory.tier === 'plan' ? 1.5 : 
-                      memory.tier === 'experience' ? 1.0 : 0.6;
-    const statusFactor = memory.status === 'active' ? 1.0 : 
-                         memory.status === 'fading' ? 0.5 : 0.1;
-    const pinBoost = memory.isPinned ? 1.5 : 1.0;
-
-    return (
-      baseWeight * 0.25 +
-      timeDecay * 0.2 +
-      emotionMatch * 0.15 +
-      keywordMatch * 0.15 +
-      freqBoost * 0.05 +
-      tierBoost * 0.1 +
-      statusFactor * 0.05 +
-      pinBoost * 0.05
-    );
-  }
-
   private averageEmotion(memories: MemoryEntry[]): EmotionCoordinate {
     if (memories.length === 0) return { valence: 0, arousal: 0 };
-    const v = memories.reduce((s, m) => s + m.emotion.valence, 0) / memories.length;
-    const a = memories.reduce((s, m) => s + m.emotion.arousal, 0) / memories.length;
+    const v = memories.reduce((s, m) => s + (m.valence ?? m.emotion?.valence ?? 0), 0) / memories.length;
+    const a = memories.reduce((s, m) => s + (m.arousal ?? m.emotion?.arousal ?? 0), 0) / memories.length;
     return { valence: v, arousal: a };
   }
 
   private getTierName(tier: MemoryEntry['tier']): string {
-    const map = { core: '核心', experience: '经历', feeling: '感受', plan: '计划', archive: '归档' };
+    const map: Record<string, string> = { 
+      core: '核心', 
+      experience: '经历', 
+      feeling: '感受', 
+      plan: '计划', 
+      archive: '归档' 
+    };
     return map[tier] || tier;
   }
 }
