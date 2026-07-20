@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useOSStore } from '@/context/OSStore';
+import { runMigrations } from '@/db/migrate';
 import StatusBar from '@/components/StatusBar';
 import AppContainer from '@/components/AppContainer';
 import Dock from '@/components/Dock';
@@ -24,6 +25,9 @@ function App() {
   useEffect(() => {
     if (!ready) return;
     const init = async () => {
+      // === 阶段 3：应用启动时自动执行数据迁移 ===
+      await runMigrations().catch(console.error);
+
       await Promise.all([
         loadSettings(),
         loadUserProfile(),

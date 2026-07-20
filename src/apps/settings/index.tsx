@@ -3,9 +3,10 @@ import { useOSStore } from '@/context/OSStore';
 import { 
   Key, Globe, Mic, Save, Download, Upload, Trash2, ChevronRight, User, 
   RefreshCw, Check, ChevronDown, AlertCircle, WifiOff, ShieldAlert,
-  Plug, MapPin
+  Plug, MapPin, FileText, Archive
 } from 'lucide-react';
 import { exportAllData, importAllData } from '@/db';
+import { exportMemoriesToMarkdownZip, importMemoriesFromMarkdown } from '@/db/markdown';
 
 interface ModelInfo {
   id: string;
@@ -13,7 +14,7 @@ interface ModelInfo {
 }
 
 export default function SettingsApp() {
-  const { settings, updateSettings, userProfile, updateUserProfile, setCurrentApp } = useOSStore();
+  const { settings, updateSettings, userProfile, updateUserProfile, setCurrentApp, activeCharacterId, characters } = useOSStore();
   const [localSettings, setLocalSettings] = useState(settings);
   const [localProfile, setLocalProfile] = useState(userProfile);
   const [saveStatus, setSaveStatus] = useState('');
@@ -25,6 +26,12 @@ export default function SettingsApp() {
   const [modelError, setModelError] = useState('');
   const [modelErrorType, setModelErrorType] = useState<'cors' | 'network' | 'auth' | 'unknown'>('unknown');
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // 记忆导出/导入状态
+  const [exportMarkdownStatus, setExportMarkdownStatus] = useState('');
+  const [importMarkdownStatus, setImportMarkdownStatus] = useState('');
+
+  const activeCharacter = characters.find(c => c.id === activeCharacterId);
 
   // 点击外部关闭下拉框
   useEffect(() => {
@@ -158,6 +165,56 @@ export default function SettingsApp() {
       const req = indexedDB.deleteDatabase('MyOS');
       req.onsuccess = () => window.location.reload();
     }
+  };
+
+  // ========== 记忆 Markdown 导出 ==========
+  const handleExportMarkdown = async () => {
+    try {
+      setExportMarkdownStatus('导出中...');
+      const { blob, filename, count } = await exportMemoriesToMarkdownZip(
+        activeCharacterId || undefined,
+        activeCharacter?.name
+      );
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      setExportMarkdownStatus(`已导出 ${count} 条记忆`);
+      setTimeout(() => setExportMarkdownStatus(''), 3000);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '未知错误';
+      setExportMarkdownStatus(`导出失败: ${msg}`);
+      setTimeout(() => setExportMarkdownStatus(''), 5000);
+    }
+  };
+
+  // ========== 记忆 Markdown 导入 ==========
+  const handleImportMarkdown = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    try {
+      setImportMarkdownStatus('导入中...');
+      const result = await importMemoriesFromMarkdown(files, activeCharacterId || undefined);
+      const parts: string[] = [`${result.imported} 条成功`];
+      if (result.skipped > 0) parts.push(`${result.skipped} 条跳过`);
+      if (result.errors.length > 0) parts.push(`${result.errors.length} 条错误`);
+      setImportMarkdownStatus(`导入完成: ${parts.join('，')}`);
+      setTimeout(() => setImportMarkdownStatus(''), 5000);
+      if (result.imported > 0) {
+        // 刷新页面以加载新记忆
+        setTimeout(() => window.location.reload(), 1500);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '未知错误';
+      setImportMarkdownStatus(`导入失败: ${msg}`);
+      setTimeout(() => setImportMarkdownStatus(''), 5000);
+    }
+
+    // 清空 input，允许重复选择同一文件
+    e.target.value = '';
   };
 
   const getErrorIcon = () => {
@@ -424,6 +481,61 @@ export default function SettingsApp() {
                 className="glass-input w-full text-sm"
               />
             </div>
+          </div>
+        </section>
+
+        {/* ========== 记忆管理（阶段 3 新增）========== */}
+        <section>
+          <h2 className="text-white/50 text-xs font-medium uppercase tracking-wider mb-3 flex items-center gap-2">
+            <FileText size={14} /> 记忆管理
+          </h2>
+          <div className="space-y-2">
+            {/* 导出记忆为 Markdown */}
+            <button
+              onClick={handleExportMarkdown}
+              disabled={!!exportMarkdownStatus && exportMarkdownStatus === '导出中...'}
+              className="glass-card w-full p-3 flex items-center justify-between text-left hover:bg-white/10 transition-colors disabled:opacity-60"
+            >
+              <div className="flex items-center gap-3">
+                <Archive size={18} className="text-purple-400" />
+                <div>
+                  <span className="text-white/80 text-sm">导出记忆为 Markdown</span>
+                  {activeCharacter && (
+                    <p className="text-white/30 text-xs">当前角色: {activeCharacter.name}</p>
+                  )}
+                </div>
+              </div>
+              <ChevronRight size={16} className="text-white/30" />
+            </button>
+            {exportMarkdownStatus && (
+              <p className={`text-xs px-1 ${exportMarkdownStatus.includes('失败') ? 'text-red-400/80' : 'text-green-400/80'}`}>
+                {exportMarkdownStatus}
+              </p>
+            )}
+
+            {/* 从 Markdown 导入记忆 */}
+            <label className="glass-card w-full p-3 flex items-center justify-between text-left hover:bg-white/10 cursor-pointer block">
+              <div className="flex items-center gap-3">
+                <FileText size={18} className="text-emerald-400" />
+                <div>
+                  <span className="text-white/80 text-sm">从 Markdown 导入记忆</span>
+                  <p className="text-white/30 text-xs">支持多选 .md 文件批量导入</p>
+                </div>
+              </div>
+              <ChevronRight size={16} className="text-white/30" />
+              <input
+                type="file"
+                accept=".md"
+                multiple
+                onChange={handleImportMarkdown}
+                className="hidden"
+              />
+            </label>
+            {importMarkdownStatus && (
+              <p className={`text-xs px-1 ${importMarkdownStatus.includes('失败') ? 'text-red-400/80' : 'text-green-400/80'}`}>
+                {importMarkdownStatus}
+              </p>
+            )}
           </div>
         </section>
 
