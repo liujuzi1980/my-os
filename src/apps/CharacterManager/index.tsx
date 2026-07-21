@@ -3,7 +3,7 @@ import { useOSStore } from '@/context/OSStore';
 import { saveCharacter, deleteCharacter } from '@/db';
 import { 
   Plus, Trash2, Edit3, MessageCircle, X, Bot, Sparkles, Heart,
-  Frown, Meh, Smile, HeartCrack
+  Frown, Meh, Smile, HeartCrack, Image
 } from 'lucide-react';
 import type { Character, RelationshipStage } from '@/types';
 
@@ -43,7 +43,7 @@ export default function CharacterManagerApp() {
   const { characters, activeCharacterId, setActiveCharacter, addCharacter, removeCharacter, setCurrentApp } = useOSStore();
   const [isEditing, setIsEditing] = useState(false);
   const [editingCharacter, setEditingCharacter] = useState<Partial<Character>>({});
-  const [activeTab, setActiveTab] = useState<'basic' | 'memory' | 'status'>('basic');
+  const [activeTab, setActiveTab] = useState<'basic' | 'memory' | 'status' | 'image'>('basic');
 
   const handleNewCharacter = () => {
     setEditingCharacter({
@@ -60,6 +60,11 @@ export default function CharacterManagerApp() {
       impression: '',
       createdAt: Date.now(),
       updatedAt: Date.now(),
+
+      // === 生图相关（新增）===
+      faceReferenceImage: '',
+      imagePositivePrompt: '',
+      imageNegativePrompt: '',
     });
     setActiveTab('basic');
     setIsEditing(true);
@@ -92,6 +97,11 @@ export default function CharacterManagerApp() {
       createdAt: editingCharacter.createdAt || Date.now(),
       updatedAt: Date.now(),
       worldBooks: editingCharacter.worldBooks,
+
+      // === 生图相关（新增）===
+      faceReferenceImage: editingCharacter.faceReferenceImage,
+      imagePositivePrompt: editingCharacter.imagePositivePrompt?.trim(),
+      imageNegativePrompt: editingCharacter.imageNegativePrompt?.trim(),
     };
 
     await addCharacter(char);
@@ -131,6 +141,7 @@ export default function CharacterManagerApp() {
             { key: 'basic' as const, label: '基础设定' },
             { key: 'memory' as const, label: '记忆 & 印象' },
             { key: 'status' as const, label: '当前状态' },
+            { key: 'image' as const, label: '生图设置' },
           ].map(tab => (
             <button
               key={tab.key}
@@ -319,6 +330,96 @@ export default function CharacterManagerApp() {
                 <p className="text-white/30 text-xs leading-relaxed">
                   情绪和状态会在每次对话时注入到 AI 的上下文中，让角色的回复更有"此刻感"。
                   比如设置为"刚睡醒有点困"，角色可能会回复得更慵懒、更简短。
+                </p>
+              </div>
+            </>
+          )}
+
+          {/* ===== 生图设置 Tab（阶段 4 新增）===== */}
+          {activeTab === 'image' && (
+            <>
+              {/* 锁脸图上传 */}
+              <div>
+                <label className="text-white/60 text-sm block mb-1.5">锁脸图</label>
+                <p className="text-white/30 text-xs mb-2">上传一张角色参考图，帮助 AI 生成时保持角色形象一致</p>
+
+                {editingCharacter.faceReferenceImage ? (
+                  <div className="relative inline-block">
+                    <img
+                      src={editingCharacter.faceReferenceImage}
+                      alt="锁脸图预览"
+                      className="w-32 h-32 object-cover rounded-xl border border-white/10"
+                    />
+                    <button
+                      onClick={() => setEditingCharacter({ ...editingCharacter, faceReferenceImage: '' })}
+                      className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-red-500/80 hover:bg-red-500 flex items-center justify-center text-white text-xs"
+                      title="删除锁脸图"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ) : (
+                  <label className="flex flex-col items-center justify-center w-32 h-32 rounded-xl border-2 border-dashed border-white/20 hover:border-white/40 cursor-pointer transition-colors bg-white/5 hover:bg-white/8">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        // 限制文件大小 2MB
+                        if (file.size > 2 * 1024 * 1024) {
+                          alert('图片大小不能超过 2MB');
+                          return;
+                        }
+                        const reader = new FileReader();
+                        reader.onload = (event) => {
+                          const base64 = event.target?.result as string;
+                          setEditingCharacter({ ...editingCharacter, faceReferenceImage: base64 });
+                        };
+                        reader.readAsDataURL(file);
+                      }}
+                    />
+                    <span className="text-white/40 text-2xl">+</span>
+                    <span className="text-white/30 text-xs mt-1">点击上传</span>
+                  </label>
+                )}
+              </div>
+
+              {/* 正面提示词 */}
+              <div>
+                <label className="text-white/60 text-sm block mb-1.5">正面提示词</label>
+                <p className="text-white/30 text-xs mb-1.5">描述角色的固定外貌特征，每次生图时自动拼接</p>
+                <textarea
+                  value={editingCharacter.imagePositivePrompt || ''}
+                  onChange={(e) => setEditingCharacter({ ...editingCharacter, imagePositivePrompt: e.target.value })}
+                  placeholder="例如：1girl, long silver hair, blue eyes, cat ears, black hoodie, soft lighting, high quality"
+                  rows={4}
+                  className="glass-input w-full text-sm resize-none"
+                />
+                <p className="text-white/20 text-xs mt-1">AI 会在每次生图时自动将这段描述拼接到 prompt 前面</p>
+              </div>
+
+              {/* 负面提示词 */}
+              <div>
+                <label className="text-white/60 text-sm block mb-1.5">负面提示词</label>
+                <p className="text-white/30 text-xs mb-1.5">描述需要避免的内容，每次生图时自动使用</p>
+                <textarea
+                  value={editingCharacter.imageNegativePrompt || ''}
+                  onChange={(e) => setEditingCharacter({ ...editingCharacter, imageNegativePrompt: e.target.value })}
+                  placeholder="例如：lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit"
+                  rows={3}
+                  className="glass-input w-full text-sm resize-none"
+                />
+                <p className="text-white/20 text-xs mt-1">AI 会在每次生图时自动将这段描述作为 negative prompt</p>
+              </div>
+
+              <div className="glass-card p-4">
+                <p className="text-white/50 text-sm mb-2">💡 使用说明</p>
+                <p className="text-white/30 text-xs leading-relaxed">
+                  设置好后，AI 角色在对话中可以自主决定何时发图。当 AI 调用 generate_image 工具时，
+                  系统会自动将"正面提示词 + AI 补充的场景描述"作为最终 prompt，"负面提示词"作为 negative prompt。
+                  锁脸图目前用于 system prompt 中的文字描述参考（大多数生图 API 不支持直接上传参考图）。
                 </p>
               </div>
             </>

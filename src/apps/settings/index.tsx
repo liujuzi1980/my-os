@@ -3,12 +3,17 @@ import { useOSStore } from '@/context/OSStore';
 import { 
   Key, Globe, Mic, Save, Download, Upload, Trash2, ChevronRight, User, 
   RefreshCw, Check, ChevronDown, AlertCircle, WifiOff, ShieldAlert,
-  Plug, MapPin, FileText, Archive
+  Plug, MapPin, FileText, Archive, Image
 } from 'lucide-react';
 import { exportAllData, importAllData } from '@/db';
 import { exportMemoriesToMarkdownZip, importMemoriesFromMarkdown } from '@/db/markdown';
 
 interface ModelInfo {
+  id: string;
+  owned_by?: string;
+}
+
+interface ImageModelInfo {
   id: string;
   owned_by?: string;
 }
@@ -27,6 +32,14 @@ export default function SettingsApp() {
   const [modelErrorType, setModelErrorType] = useState<'cors' | 'network' | 'auth' | 'unknown'>('unknown');
   const dropdownRef = useRef<HTMLDivElement>(null);
 
+  // === 阶段 4：生图设置相关状态 ===
+  const [imageModels, setImageModels] = useState<ImageModelInfo[]>([]);
+  const [isFetchingImageModels, setIsFetchingImageModels] = useState(false);
+  const [showImageModelDropdown, setShowImageModelDropdown] = useState(false);
+  const [imageModelError, setImageModelError] = useState('');
+  const [imageModelErrorType, setImageModelErrorType] = useState<'cors' | 'network' | 'auth' | 'unknown'>('unknown');
+  const imageDropdownRef = useRef<HTMLDivElement>(null);
+
   // 记忆导出/导入状态
   const [exportMarkdownStatus, setExportMarkdownStatus] = useState('');
   const [importMarkdownStatus, setImportMarkdownStatus] = useState('');
@@ -38,6 +51,9 @@ export default function SettingsApp() {
     const handleClickOutside = (e: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
         setShowModelDropdown(false);
+      }
+      if (imageDropdownRef.current && !imageDropdownRef.current.contains(e.target as Node)) {
+        setShowImageModelDropdown(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -130,6 +146,110 @@ export default function SettingsApp() {
   const handleSelectModel = (modelId: string) => {
     setLocalSettings({ ...localSettings, model: modelId });
     setShowModelDropdown(false);
+  };
+
+  // === 阶段 4：获取生图模型列表 ===
+  const handleFetchImageModels = async () => {
+    const imgConfig = localSettings.imageGeneration;
+    if (!imgConfig || !imgConfig.apiBaseUrl || !imgConfig.apiKey) {
+      setImageModelError('请先填写生图 Base URL 和 API Key');
+      setImageModelErrorType('unknown');
+      return;
+    }
+
+    setIsFetchingImageModels(true);
+    setImageModelError('');
+    setImageModelErrorType('unknown');
+    setShowImageModelDropdown(false);
+
+    try {
+      const response = await fetch(`${imgConfig.apiBaseUrl}/models`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${imgConfig.apiKey}`,
+        },
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error('API Key 无效或已过期');
+        } else if (response.status === 403) {
+          throw new Error('无权限访问，请检查 API Key 权限');
+        } else {
+          throw new Error(`服务器返回 ${response.status}`);
+        }
+      }
+
+      const data = await response.json();
+      const modelList: ImageModelInfo[] = data.data || [];
+
+      // 生图模型过滤：保留 dall/image/flux 等生图相关模型，过滤掉非生图模型
+      const imageModelsList = modelList
+        .filter((m: ImageModelInfo) => {
+          const id = m.id.toLowerCase();
+          // 保留包含生图关键词的模型
+          const isImageModel = 
+            id.includes('dall') ||
+            id.includes('image') ||
+            id.includes('flux') ||
+            id.includes('sd') ||
+            id.includes('stable') ||
+            id.includes('wanx') ||
+            id.includes('cogview') ||
+            id.includes('gemini') && id.includes('image');
+          // 过滤掉明显不是生图的模型
+          const isNonImageModel =
+            id.includes('embedding') ||
+            id.includes('tts') ||
+            id.includes('whisper') ||
+            id.includes('moderation') ||
+            id.includes('chat') ||
+            id.includes('text');
+          return isImageModel && !isNonImageModel;
+        })
+        .sort((a: ImageModelInfo, b: ImageModelInfo) => a.id.localeCompare(b.id));
+
+      setImageModels(imageModelsList);
+      setShowImageModelDropdown(true);
+
+      if (imageModelsList.length === 0) {
+        setImageModelError('未找到可用的生图模型，请手动输入模型名称');
+        setImageModelErrorType('unknown');
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : '未知错误';
+
+      if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('network')) {
+        setImageModelErrorType('cors');
+        setImageModelError('请求被浏览器拦截，可能是 CORS 跨域限制。建议：1) 换用支持 CORS 的 API；2) 或在电脑上配置后同步到手机');
+      } else if (msg.includes('Key') || msg.includes('401') || msg.includes('403')) {
+        setImageModelErrorType('auth');
+        setImageModelError(`认证失败: ${msg}`);
+      } else {
+        setImageModelErrorType('network');
+        setImageModelError(`网络错误: ${msg}`);
+      }
+    } finally {
+      setIsFetchingImageModels(false);
+    }
+  };
+
+  const handleSelectImageModel = (modelId: string) => {
+    const imgConfig = localSettings.imageGeneration || { apiBaseUrl: '', apiKey: '', model: '', enabled: false };
+    setLocalSettings({
+      ...localSettings,
+      imageGeneration: { ...imgConfig, model: modelId },
+    });
+    setShowImageModelDropdown(false);
+  };
+
+  const getImageErrorIcon = () => {
+    switch (imageModelErrorType) {
+      case 'cors': return <ShieldAlert size={14} className="text-orange-400 flex-shrink-0" />;
+      case 'network': return <WifiOff size={14} className="text-red-400 flex-shrink-0" />;
+      case 'auth': return <Key size={14} className="text-yellow-400 flex-shrink-0" />;
+      default: return <AlertCircle size={14} className="text-red-400 flex-shrink-0" />;
+    }
   };
 
   const handleExport = async () => {
@@ -271,7 +391,7 @@ export default function SettingsApp() {
             </div>
 
             {/* Model 输入 + 获取模型按钮 */}
-            <div className="relative" ref={dropdownRef}>
+            <div className="relative z-10" ref={dropdownRef}>
               <label className="text-white/60 text-sm block mb-1.5">模型</label>
               <div className="flex gap-2">
                 <div className="flex-1 relative">
@@ -320,7 +440,7 @@ export default function SettingsApp() {
 
               {/* 模型下拉选择框 */}
               {showModelDropdown && models.length > 0 && (
-                <div className="absolute z-50 left-0 right-0 mt-1.5 glass-panel overflow-hidden shadow-2xl max-h-64 overflow-y-auto">
+                <div className="absolute z-[60] left-0 right-0 mt-1.5 glass-panel overflow-hidden shadow-2xl max-h-64 overflow-y-auto">
                   <div className="px-3 py-2 border-b border-white/5 bg-white/5">
                     <span className="text-white/40 text-xs">找到 {models.length} 个模型</span>
                   </div>
@@ -397,6 +517,162 @@ export default function SettingsApp() {
                 用于查询附近美食、奶茶、咖啡店和天气
               </p>
             </div>
+          </div>
+        </section>
+
+        {/* ========== 生图设置（阶段 4 新增）========== */}
+        <section className="relative z-20">
+          <h2 className="text-white/50 text-xs font-medium uppercase tracking-wider mb-3 flex items-center gap-2">
+            <Image size={14} /> 生图设置
+          </h2>
+          <div className="glass-card p-4">
+            {/* 启用开关 */}
+            <div className="flex items-center justify-between mb-4">
+              <span className="text-white/80 text-sm">启用生图功能</span>
+              <button
+                onClick={() => {
+                  const imgConfig = localSettings.imageGeneration || { apiBaseUrl: '', apiKey: '', model: '', enabled: false };
+                  setLocalSettings({ ...localSettings, imageGeneration: { ...imgConfig, enabled: !imgConfig.enabled } });
+                }}
+                className={`
+                  w-11 h-6 rounded-full transition-colors relative
+                  ${localSettings.imageGeneration?.enabled ? 'bg-blue-500' : 'bg-white/10'}
+                `}
+              >
+                <span 
+                  className="absolute top-0.5 w-5 h-5 bg-white rounded-full transition-transform"
+                  style={{ 
+                    transform: localSettings.imageGeneration?.enabled ? 'translateX(20px)' : 'translateX(0)',
+                    left: '2px'
+                  }} 
+                />
+              </button>
+            </div>
+
+            {localSettings.imageGeneration?.enabled && (
+              <div className="space-y-3 mt-3 pt-3 border-t border-white/5">
+                {/* Base URL */}
+                <div>
+                  <label className="text-white/60 text-sm block mb-1.5">生图 API Base URL</label>
+                  <input
+                    type="text"
+                    value={localSettings.imageGeneration?.apiBaseUrl || ''}
+                    onChange={(e) => {
+                      const imgConfig = localSettings.imageGeneration || { apiBaseUrl: '', apiKey: '', model: '', enabled: true };
+                      setLocalSettings({ ...localSettings, imageGeneration: { ...imgConfig, apiBaseUrl: e.target.value } });
+                      setImageModelError('');
+                    }}
+                    placeholder="https://api.openai.com/v1"
+                    className="glass-input w-full text-sm"
+                  />
+                </div>
+
+                {/* API Key */}
+                <div>
+                  <label className="text-white/60 text-sm block mb-1.5">生图 API Key</label>
+                  <input
+                    type="password"
+                    value={localSettings.imageGeneration?.apiKey || ''}
+                    onChange={(e) => {
+                      const imgConfig = localSettings.imageGeneration || { apiBaseUrl: '', apiKey: '', model: '', enabled: true };
+                      setLocalSettings({ ...localSettings, imageGeneration: { ...imgConfig, apiKey: e.target.value } });
+                      setImageModelError('');
+                    }}
+                    placeholder="sk-..."
+                    className="glass-input w-full text-sm"
+                  />
+                </div>
+
+                {/* 模型选择 */}
+                <div className="relative z-10" ref={imageDropdownRef}>
+                  <label className="text-white/60 text-sm block mb-1.5">生图模型</label>
+                  <div className="flex gap-2">
+                    <div className="flex-1 relative">
+                      <input
+                        type="text"
+                        value={localSettings.imageGeneration?.model || ''}
+                        onChange={(e) => {
+                          const imgConfig = localSettings.imageGeneration || { apiBaseUrl: '', apiKey: '', model: '', enabled: true };
+                          setLocalSettings({ ...localSettings, imageGeneration: { ...imgConfig, model: e.target.value } });
+                        }}
+                        placeholder="例如：dall-e-3、flux-1、wanx-v1"
+                        className="glass-input w-full text-sm pr-8"
+                      />
+                      {localSettings.imageGeneration?.model && (
+                        <button
+                          onClick={() => {
+                            const imgConfig = localSettings.imageGeneration || { apiBaseUrl: '', apiKey: '', model: '', enabled: true };
+                            setLocalSettings({ ...localSettings, imageGeneration: { ...imgConfig, model: '' } });
+                          }}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/60"
+                        >
+                          <span className="text-lg">×</span>
+                        </button>
+                      )}
+                    </div>
+                    <button
+                      onClick={handleFetchImageModels}
+                      disabled={isFetchingImageModels}
+                      className={`
+                        glass-btn flex items-center gap-1.5 px-3 whitespace-nowrap
+                        ${isFetchingImageModels ? 'opacity-60 cursor-wait' : 'hover:bg-white/15'}
+                      `}
+                      title="获取可用生图模型列表"
+                    >
+                      <RefreshCw size={14} className={isFetchingImageModels ? 'animate-spin' : ''} />
+                      <span className="text-xs">获取模型</span>
+                    </button>
+                  </div>
+
+                  {/* 错误提示 */}
+                  {imageModelError && (
+                    <div className="flex items-start gap-1.5 mt-2 text-xs">
+                      {getImageErrorIcon()}
+                      <span className={`
+                        ${imageModelErrorType === 'cors' ? 'text-orange-400/90' : 'text-red-400/80'}
+                        leading-relaxed
+                      `}>
+                        {imageModelError}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* 生图模型下拉选择框 */}
+                  {showImageModelDropdown && imageModels.length > 0 && (
+                    <div className="absolute z-[60] left-0 right-0 mt-1.5 glass-panel overflow-hidden shadow-2xl max-h-64 overflow-y-auto">
+                      <div className="px-3 py-2 border-b border-white/5 bg-white/5">
+                        <span className="text-white/40 text-xs">找到 {imageModels.length} 个生图模型</span>
+                      </div>
+                      {imageModels.map((model) => (
+                        <button
+                          key={model.id}
+                          onClick={() => handleSelectImageModel(model.id)}
+                          className={`
+                            w-full px-3 py-2.5 flex items-center justify-between text-left
+                            hover:bg-white/10 transition-colors
+                            ${localSettings.imageGeneration?.model === model.id ? 'bg-blue-500/10' : ''}
+                          `}
+                        >
+                          <div className="flex-1 min-w-0">
+                            <p className="text-white/80 text-sm truncate">{model.id}</p>
+                            {model.owned_by && (
+                              <p className="text-white/30 text-xs">{model.owned_by}</p>
+                            )}
+                          </div>
+                          {localSettings.imageGeneration?.model === model.id && (
+                            <Check size={16} className="text-blue-400 flex-shrink-0 ml-2" />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <p className="text-white/30 text-xs">
+                  支持 OpenAI DALL-E、硅基流动、通义万相、Gemini 等生图 API
+                </p>
+              </div>
+            )}
           </div>
         </section>
 
@@ -519,13 +795,13 @@ export default function SettingsApp() {
                 <FileText size={18} className="text-emerald-400" />
                 <div>
                   <span className="text-white/80 text-sm">从 Markdown 导入记忆</span>
-                  <p className="text-white/30 text-xs">支持多选 .md 文件批量导入</p>
+                  <p className="text-white/30 text-xs">支持 .zip 或 .md 文件批量导入</p>
                 </div>
               </div>
               <ChevronRight size={16} className="text-white/30" />
               <input
                 type="file"
-                accept=".md"
+                accept=".md,.zip"
                 multiple
                 onChange={handleImportMarkdown}
                 className="hidden"

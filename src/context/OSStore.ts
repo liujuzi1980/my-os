@@ -238,6 +238,13 @@ export const useOSStore = create<OSState>()(
         memoryEngine: { type: 'local' },
         mcpConnections: [],
         amapKey: '',
+        // === 阶段 4：生图配置默认值 ===
+        imageGeneration: {
+          apiBaseUrl: '',
+          apiKey: '',
+          model: '',
+          enabled: false,
+        },
       },
       loadSettings: async () => {
         try {

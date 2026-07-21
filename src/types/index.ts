@@ -99,6 +99,11 @@ export interface Character {
   // === 离线感知 ===
   lastVisitTime?: number;
   conversationRound?: number;
+
+  // === 生图相关（阶段 4 新增）===
+  faceReferenceImage?: string;    // base64 锁脸图
+  imagePositivePrompt?: string;   // 生图正面提示词（角色固定特征描述）
+  imageNegativePrompt?: string;   // 生图负面提示词（需要避免的内容）
 }
 
 // ==================== 记忆层级系统 ====================
@@ -267,6 +272,15 @@ export interface AppDefinition {
   component: React.LazyExoticComponent<React.ComponentType>;
 }
 
+// ==================== 生图配置（阶段 4 新增）====================
+
+export interface ImageGenerationConfig {
+  apiBaseUrl: string;      // 生图 API 地址
+  apiKey: string;          // 生图 API Key
+  model: string;           // 生图模型
+  enabled: boolean;        // 是否启用生图
+}
+
 // ==================== 系统设置 ====================
 
 export type MemoryEngineType = 'local' | 'ombre';
@@ -290,6 +304,8 @@ export interface SystemSettings {
   lastApp?: AppID;
   mcpConnections: MCPConnection[];
   amapKey?: string;        // 高德地图 API Key
+  // === 阶段 4：生图配置 ===
+  imageGeneration?: ImageGenerationConfig;
 }
 
 // ==================== 通知 ====================

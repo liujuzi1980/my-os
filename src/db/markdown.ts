@@ -567,6 +567,36 @@ export async function importMemoriesFromMarkdown(
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
 
+    // 处理 ZIP 文件：自动解压并导入其中的 .md 文件
+    if (file.name.endsWith('.zip')) {
+      try {
+        const buffer = await file.arrayBuffer();
+        const entries = await parseZipEntries(buffer);
+        for (const entry of entries) {
+          if (!entry.name.endsWith('.md') || entry.name.startsWith('_')) continue;
+          try {
+            const memory = markdownToMemory(entry.content, defaultCharacterId);
+            if (!memory) {
+              result.errors.push(`无法解析: ${entry.name}`);
+              continue;
+            }
+            memory.lastTouched = Date.now();
+            await saveMemoryV2(memory);
+            result.imported++;
+          } catch (err) {
+            result.errors.push(
+              `${entry.name}: ${err instanceof Error ? err.message : '未知错误'}`
+            );
+          }
+        }
+      } catch (err) {
+        result.errors.push(
+          `${file.name}: ${err instanceof Error ? err.message : 'ZIP 解析失败'}`
+        );
+      }
+      continue;
+    }
+
     // 跳过非 .md 文件
     if (!file.name.endsWith('.md') || file.name.startsWith('_')) {
       result.skipped++;
@@ -591,6 +621,131 @@ export async function importMemoriesFromMarkdown(
         `${file.name}: ${err instanceof Error ? err.message : '未知错误'}`
       );
     }
+  }
+
+  return result;
+}
+// ============================================================
+// 第六部分：ZIP 文件解析器（纯前端，零依赖）
+// 仅支持存储模式（不压缩），用于导入我们自己导出的 ZIP
+// ============================================================
+
+interface ZipEntry {
+  name: string;
+  content: string;
+}
+
+/**
+ * 从 ZIP ArrayBuffer 中提取所有文件条目
+ * 仅支持存储模式（compression method = 0）
+ */
+async function parseZipEntries(buffer: ArrayBuffer): Promise<ZipEntry[]> {
+  const view = new DataView(buffer);
+  const uint8 = new Uint8Array(buffer);
+  const decoder = new TextDecoder('utf-8');
+  const entries: ZipEntry[] = [];
+
+  // 找 EOCD 签名 0x06054b50，从末尾往前搜索
+  let eocdOffset = -1;
+  for (let i = buffer.byteLength - 22; i >= Math.max(0, buffer.byteLength - 65557); i--) {
+    if (view.getUint32(i, true) === 0x06054b50) {
+      eocdOffset = i;
+      break;
+    }
+  }
+
+  if (eocdOffset < 0) {
+    throw new Error('无法找到 ZIP 结束标记，文件可能损坏');
+  }
+
+  // 解析 EOCD
+  const cdOffset = view.getUint32(eocdOffset + 16, true);
+  const totalEntries = view.getUint16(eocdOffset + 10, true);
+
+  // 遍历中央目录
+  let pos = cdOffset;
+  for (let i = 0; i < totalEntries; i++) {
+    if (view.getUint32(pos, true) !== 0x02014b50) {
+      throw new Error(`中央目录条目 ${i} 签名不匹配`);
+    }
+
+    const compressionMethod = view.getUint16(pos + 10, true);
+    const compressedSize = view.getUint32(pos + 20, true);
+    const uncompressedSize = view.getUint32(pos + 24, true);
+    const nameLen = view.getUint16(pos + 28, true);
+    const extraLen = view.getUint16(pos + 30, true);
+    const commentLen = view.getUint16(pos + 32, true);
+    const localHeaderOffset = view.getUint32(pos + 42, true);
+
+    // 读取文件名
+    const nameBytes = uint8.slice(pos + 46, pos + 46 + nameLen);
+    const name = decoder.decode(nameBytes);
+
+    // 跳到本地文件头
+    const dataPos = localHeaderOffset + 30 + nameLen + extraLen;
+
+    // 只提取 .md 文件，跳过 README.md 和 _manifest.json
+    if (name.endsWith('.md') && !name.startsWith('_') && name !== 'README.md') {
+      if (compressionMethod !== 0) {
+        throw new Error(`文件 ${name} 使用了压缩，当前仅支持存储模式`);
+      }
+
+      const dataBytes = uint8.slice(dataPos, dataPos + uncompressedSize);
+      const content = decoder.decode(dataBytes);
+      entries.push({ name, content });
+    }
+
+    pos += 46 + nameLen + extraLen + commentLen;
+  }
+
+  return entries;
+}
+
+/**
+ * 从 ZIP 文件批量导入记忆
+ * 
+ * @param file 用户选择的 ZIP 文件
+ * @param defaultCharacterId 默认归属角色 ID（如果 Markdown 中未指定）
+ * @returns 导入统计结果
+ */
+export async function importMemoriesFromZip(
+  file: File,
+  defaultCharacterId?: string
+): Promise<ImportResult> {
+  const result: ImportResult = { imported: 0, skipped: 0, errors: [] };
+
+  try {
+    const buffer = await file.arrayBuffer();
+    const entries = await parseZipEntries(buffer);
+
+    if (entries.length === 0) {
+      result.errors.push('ZIP 中未找到有效的 .md 记忆文件');
+      return result;
+    }
+
+    for (const entry of entries) {
+      try {
+        const memory = markdownToMemory(entry.content, defaultCharacterId);
+
+        if (!memory) {
+          result.errors.push(`无法解析: ${entry.name}`);
+          continue;
+        }
+
+        // 导入时更新 lastTouched 为当前时间
+        memory.lastTouched = Date.now();
+        await saveMemoryV2(memory);
+        result.imported++;
+      } catch (err) {
+        result.errors.push(
+          `${entry.name}: ${err instanceof Error ? err.message : '未知错误'}`
+        );
+      }
+    }
+  } catch (err) {
+    result.errors.push(
+      `ZIP 解析失败: ${err instanceof Error ? err.message : '未知错误'}`
+    );
   }
 
   return result;

@@ -9,11 +9,13 @@ import { parseAIResponse } from './parser';
 import { InnerMonologue } from '@/components/InnerMonologue';
 import { deriveMood, smoothEmotion } from '@/core/EmotionUtils';
 import { 
-  Send, Image, Phone, ChevronLeft, MoreVertical, Bot, 
+  Send, Phone, ChevronLeft, MoreVertical, Bot, 
   RotateCcw, Trash2, Copy, X, AlertTriangle, Check,
   Quote, Edit3, Star, Layers, ArrowLeft, Download,
-  Wrench, Loader2
+  Wrench, Loader2, Image, Sparkles
 } from 'lucide-react';
+import { ImageService, ImageGenerationError } from '@/services/ImageService';
+import type { ImageRecord } from '@/types';
 import type { ChatMessage, MessageRole, MemoryEntry } from '@/types';
 import { getAmapToolDescriptions, callAmapTool } from '@/services/amap';
 
@@ -49,6 +51,8 @@ const AI_MENU_ITEMS: MessageMenuItem[] = [
   { key: 'favorite', label: '收藏', icon: <Star size={15} /> },
   { key: 'edit', label: '编辑', icon: <Edit3 size={15} /> },
   { key: 'regenerate', label: '重roll', icon: <RotateCcw size={15} /> },
+  { key: 'regenerate_image', label: '重新生图', icon: <Sparkles size={15} /> },
+  { key: 'delete_image', label: '删除图片', icon: <Image size={15} />, danger: true },
   { key: 'multiSelect', label: '多选', icon: <Layers size={15} /> },
   { key: 'delete', label: '删除', icon: <Trash2 size={15} />, danger: true },
 ];
@@ -135,6 +139,7 @@ interface MessageBubbleProps {
   onSaveEdit: () => void;
   onCancelEdit: () => void;
   onEditChange: (text: string) => void;
+  imageUrl?: string;
 }
 
 function MessageBubble({
@@ -142,6 +147,7 @@ function MessageBubble({
   isEditing, editText, copyFeedback, favoriteFeedback,
   onToggleMenu, onCloseMenu, onToggleSelect, onMenuAction,
   onStartEdit, onSaveEdit, onCancelEdit, onEditChange,
+  imageUrl,
 }: MessageBubbleProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const bubbleRef = useRef<HTMLDivElement>(null);
@@ -230,6 +236,8 @@ function MessageBubble({
                 key={item.key}
                 onClick={(e) => {
                   e.stopPropagation();
+                  console.log('[MenuItem] clicked:', item.key, 'label:', item.label);
+                  alert('点击了: ' + item.label + ' (' + item.key + ')');
                   onMenuAction(item.key);
                 }}
                 className={`
@@ -268,23 +276,26 @@ function MessageBubble({
           </div>
         ) : (
           <div>
-            <div
-              onClick={handleClick}
-              onContextMenu={handleContextMenu}
-              onTouchStart={handleTouchStart}
-              className={`
-                ${msg.role === 'user' ? 'message-bubble-user' : 'message-bubble-ai'}
-                ${msg.isRegenerated ? 'border-yellow-400/30' : ''}
-                ${isMenuOpen ? 'ring-2 ring-white/20' : ''}
-                ${isMultiSelectMode ? 'cursor-pointer' : 'cursor-pointer select-none'}
-                transition-all duration-150
-              `}
-            >
-              <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">{cleanToolBlocks(msg.content)}</p>
-              {msg.isRegenerated && (
-                <span className="text-[10px] text-yellow-400/60 mt-1 block">已重新生成</span>
-              )}
-            </div>
+            {/* 文字气泡 —— 有图片且文字为空时不显示 */}
+            {!(msg.imageUrl && !cleanToolBlocks(msg.content)) && (
+              <div
+                onClick={handleClick}
+                onContextMenu={handleContextMenu}
+                onTouchStart={handleTouchStart}
+                className={`
+                  ${msg.role === 'user' ? 'message-bubble-user' : 'message-bubble-ai'}
+                  ${msg.isRegenerated ? 'border-yellow-400/30' : ''}
+                  ${isMenuOpen ? 'ring-2 ring-white/20' : ''}
+                  ${isMultiSelectMode ? 'cursor-pointer' : 'cursor-pointer select-none'}
+                  transition-all duration-150
+                `}
+              >
+                <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">{cleanToolBlocks(msg.content)}</p>
+                {msg.isRegenerated && (
+                  <span className="text-[10px] text-yellow-400/60 mt-1 block">已重新生成</span>
+                )}
+              </div>
+            )}
             {/* 心声 */}
             {msg.role === 'assistant' && msg.innerMonologue && (
               <InnerMonologue thought={msg.innerMonologue} />
@@ -321,6 +332,25 @@ function MessageBubble({
                   {msg.weatherData.wind && <span className="text-white/30 text-xs">🌬 {msg.weatherData.wind}</span>}
                   {msg.weatherData.humidity && <span className="text-white/30 text-xs">💧 湿度 {msg.weatherData.humidity}</span>}
                 </div>
+              </div>
+            )}
+            {/* 图片渲染（阶段 4 新增） */}
+            {(imageUrl || msg.imageUrl) && (
+              <div 
+                className="mt-2 max-w-full cursor-pointer"
+                onClick={handleClick}
+                onContextMenu={handleContextMenu}
+              >
+                <img
+                  src={imageUrl || msg.imageUrl}
+                  alt="生成的图片"
+                  className="rounded-xl max-w-full border border-white/10"
+                  style={{ maxHeight: '400px', objectFit: 'cover' }}
+                  loading="lazy"
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).style.display = 'none';
+                  }}
+                />
               </div>
             )}
           </div>
@@ -513,6 +543,9 @@ export default function MessageApp() {
   const [favoriteFeedbackId, setFavoriteFeedbackId] = useState<string | null>(null);
   const [currentEmotion, setCurrentEmotion] = useState<{ valence: number; arousal: number } | null>(null);
 
+  // === 阶段 4：生图相关状态（AI 自主触发模式）===
+  const [imageSizeWarning, setImageSizeWarning] = useState('');
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const initializedRef = useRef(false);
@@ -525,6 +558,7 @@ export default function MessageApp() {
     if (activeCharacterId && character && !initializedRef.current) {
       initializedRef.current = true;
       loadMessages();
+      checkImageStorage();
       const updated = ContextBuilder.updateLastVisit(character);
       updateCharacter(updated);
     }
@@ -548,6 +582,24 @@ export default function MessageApp() {
     if (!activeCharacterId) return;
     const chats = await getChatsByCharacter(activeCharacterId, 100);
     setMessages(chats);
+  };
+
+  // === 阶段 4：检查图片存储限额 ===
+  const checkImageStorage = async () => {
+    if (!activeCharacterId) return;
+    try {
+      const totalSize = await ImageService.getTotalImageSize(activeCharacterId);
+      const limit = 500 * 1024 * 1024; // 500MB
+      if (totalSize > limit) {
+        setImageSizeWarning(`图片存储已使用 ${ImageService.formatSize(totalSize)}，建议导出备份后清理`);
+      } else if (totalSize > limit * 0.8) {
+        setImageSizeWarning(`图片存储已使用 ${ImageService.formatSize(totalSize)}，接近 500MB 限额`);
+      } else {
+        setImageSizeWarning('');
+      }
+    } catch (e) {
+      console.error('[ImageStorage] check failed:', e);
+    }
   };
 
   // 加载角色情感状态
@@ -908,6 +960,112 @@ export default function MessageApp() {
         continue;
       }
 
+      // === 生图工具（阶段 4 新增）===
+      if (toolCall.toolName === 'generate_image') {
+        if (!character || !settings.imageGeneration?.enabled) {
+          extraSystemMessages.push({
+            role: 'system',
+            content: '[生图工具错误] 生图功能未启用或未选择角色，无法生成图片。',
+          });
+          continue;
+        }
+
+        setIsToolCalling(true);
+        setCurrentToolName('generate_image');
+
+        try {
+          const args = toolCall.arguments as Record<string, unknown>;
+          const scenePrompt = String(args.prompt || '');
+          const scene = String(args.scene || 'scene');
+
+          if (!scenePrompt.trim()) {
+            extraSystemMessages.push({
+              role: 'system',
+              content: '[生图工具错误] prompt 不能为空，请提供场景描述。',
+            });
+            setIsToolCalling(false);
+            setCurrentToolName('');
+            continue;
+          }
+
+          // 拼接最终 prompt：角色正面提示词 + AI 场景描述
+          const positivePrompt = character.imagePositivePrompt || '';
+          const negativePrompt = character.imageNegativePrompt || '';
+          const finalPrompt = positivePrompt
+            ? `${positivePrompt}, ${scenePrompt}`
+            : scenePrompt;
+
+          console.log('[generate_image] 最终 prompt:', finalPrompt);
+          console.log('[generate_image] negative prompt:', negativePrompt);
+
+          // 调用生图服务
+          const imageService = ImageService.fromConfig(settings.imageGeneration);
+          if (!imageService) {
+            extraSystemMessages.push({
+              role: 'system',
+              content: '[生图工具错误] 生图服务初始化失败，请检查生图配置。',
+            });
+            setIsToolCalling(false);
+            setCurrentToolName('');
+            continue;
+          }
+
+          const imageRecord = await imageService.generateImage({
+            prompt: finalPrompt,
+            negativePrompt: negativePrompt || undefined,
+            characterId: character.id,
+            messageId: '', // 会在发送消息时更新
+          });
+
+          // 将图片作为 AI 消息发送到聊天中
+          const aiImageMsg: ChatMessage = {
+            id: crypto.randomUUID(),
+            characterId: character.id,
+            role: 'assistant',
+            content: '',
+            timestamp: Date.now(),
+            imageUrl: imageRecord.url,
+          };
+          await saveChatMessage(aiImageMsg);
+          setMessages(prev => [...prev, aiImageMsg]);
+
+          // 更新 imageRecord 的 messageId
+          imageRecord.messageId = aiImageMsg.id;
+          const { saveImageRecord } = await import('@/db');
+          await saveImageRecord(imageRecord);
+
+          extraSystemMessages.push({
+            role: 'system',
+            content: `[生图成功] 图片已生成并发送给用户。场景：${scenePrompt}`,
+          });
+
+          // 检查存储限额
+          await checkImageStorage();
+        } catch (e: any) {
+          console.error('[generate_image] failed:', e);
+          let errorMsg = '图片生成失败';
+          if (e instanceof ImageGenerationError) {
+            switch (e.code) {
+              case 'auth': errorMsg = 'API Key 无效，请检查生图设置'; break;
+              case 'network': errorMsg = '网络错误，请检查 API 地址'; break;
+              case 'content_policy': errorMsg = '内容审核未通过，请修改描述'; break;
+              case 'rate_limit': errorMsg = '请求过于频繁，请稍后再试'; break;
+              default: errorMsg = e.message;
+            }
+          } else if (e instanceof Error) {
+            errorMsg = e.message;
+          }
+          extraSystemMessages.push({
+            role: 'system',
+            content: `[生图工具错误] ${errorMsg}`,
+          });
+        } finally {
+          setIsToolCalling(false);
+          setCurrentToolName('');
+        }
+        continue;
+      }
+
       // === MCP 工具（保留原有逻辑）===
       let targetConnectionId = toolCall.connectionId;
 
@@ -964,7 +1122,112 @@ export default function MessageApp() {
     return text;
   };
 
-  // ==================== 发送消息 ====================
+  // ==================== 图片消息操作（阶段 4 新增）====================
+
+  /**
+   * 删除图片消息 —— 删除消息 + 关联的 ImageRecord
+   */
+  const handleDeleteImage = async (msg: ChatMessage) => {
+    console.log('[handleDeleteImage] called, msg.id:', msg.id, 'imageUrl:', !!msg.imageUrl);
+    if (!character || !msg.imageUrl) {
+      console.log('[handleDeleteImage] early return: character=', !!character, 'imageUrl=', !!msg.imageUrl);
+      return;
+    }
+
+    try {
+      // 1. 从 IndexedDB 删除关联的图片记录
+      const { getImageRecordsByMessage, deleteImageRecord } = await import('@/db');
+      const imageRecords = await getImageRecordsByMessage(msg.id);
+      for (const record of imageRecords) {
+        await deleteImageRecord(record.id);
+      }
+
+      // 2. 删除消息本身
+      const db = await import('@/db').then(m => m.getDB());
+      await db.delete('chats', msg.id);
+
+      // 3. 从界面移除
+      setMessages(prev => prev.filter(m => m.id !== msg.id));
+
+      console.log('[DeleteImage] 已删除图片消息:', msg.id);
+    } catch (e) {
+      console.error('[DeleteImage] 删除失败:', e);
+    }
+  };
+
+  /**
+   * 重新生成图片 —— 用同样的 prompt 重新调用生图
+   */
+  const handleRegenerateImage = async (msg: ChatMessage) => {
+    console.log('[handleRegenerateImage] called, msg.id:', msg.id);
+    if (!character || !msg.imageUrl || !settings.imageGeneration?.enabled) {
+      console.log('[handleRegenerateImage] early return');
+      return;
+    }
+
+    setIsToolCalling(true);
+    setCurrentToolName('generate_image');
+
+    try {
+      // 1. 查找关联的图片记录，获取原始 prompt
+      const { getImageRecordsByMessage } = await import('@/db');
+      const imageRecords = await getImageRecordsByMessage(msg.id);
+      const originalRecord = imageRecords[0];
+
+      if (!originalRecord?.prompt) {
+        console.error('[RegenerateImage] 找不到原始 prompt');
+        return;
+      }
+
+      // 2. 从 prompt 中分离出场景描述（去掉角色正面提示词前缀）
+      const positivePrompt = character.imagePositivePrompt || '';
+      let scenePrompt = originalRecord.prompt;
+      if (positivePrompt && scenePrompt.startsWith(positivePrompt)) {
+        scenePrompt = scenePrompt.slice(positivePrompt.length).replace(/^,\s*/, '');
+      }
+
+      console.log('[RegenerateImage] 重新生图，scene prompt:', scenePrompt);
+
+      // 3. 调用生图服务
+      const imageService = ImageService.fromConfig(settings.imageGeneration);
+      if (!imageService) return;
+
+      const newRecord = await imageService.generateImage({
+        prompt: originalRecord.prompt, // 使用完整 prompt（包含角色描述）
+        negativePrompt: originalRecord.negativePrompt || undefined,
+        characterId: character.id,
+        messageId: msg.id,
+      });
+
+      // 4. 更新消息的 imageUrl
+      const db = await import('@/db').then(m => m.getDB());
+      const updatedMsg = { ...msg, imageUrl: newRecord.url };
+      await db.put('chats', updatedMsg);
+      setMessages(prev => prev.map(m => m.id === msg.id ? updatedMsg : m));
+
+      // 5. 更新 imageRecord 的 messageId
+      newRecord.messageId = msg.id;
+      const { saveImageRecord } = await import('@/db');
+      await saveImageRecord(newRecord);
+
+      // 6. 删除旧图片记录
+      if (originalRecord) {
+        const { deleteImageRecord } = await import('@/db');
+        await deleteImageRecord(originalRecord.id);
+      }
+
+      console.log('[RegenerateImage] 图片已重新生成');
+    } catch (e) {
+      console.error('[RegenerateImage] 重新生图失败:', e);
+    } finally {
+      setIsToolCalling(false);
+      setCurrentToolName('');
+    }
+  };
+
+    // ==================== 生图功能（阶段 4：AI 自主触发模式）====================
+  // 生图由 AI 通过 generate_image 工具自主触发，不再提供手动输入入口
+  // 工具拦截逻辑在 handleToolCalls 中处理// ==================== 发送消息 ====================
 
   const sendMessage = useCallback(async () => {
     if (!inputText.trim() || !character || !settings.apiKey) return;
@@ -1305,6 +1568,7 @@ export default function MessageApp() {
   };
 
   const handleMenuAction = (msg: ChatMessage, action: string) => {
+    console.log('[handleMenuAction] action:', action, 'msg.id:', msg.id, 'hasImage:', !!msg.imageUrl);
     setOpenMenuMsgId(null);
 
     switch (action) {
@@ -1330,6 +1594,12 @@ export default function MessageApp() {
         break;
       case 'regenerate':
         handleRegenerate(msg);
+        break;
+      case 'regenerate_image':
+        handleRegenerateImage(msg);
+        break;
+      case 'delete_image':
+        handleDeleteImage(msg);
         break;
       case 'delete':
         setDeleteTarget('single');
@@ -1571,6 +1841,7 @@ export default function MessageApp() {
               <MessageBubble
                 msg={msg}
                 characterName={character.name}
+                imageUrl={msg.imageUrl}
                 isMenuOpen={openMenuMsgId === msg.id}
                 isMultiSelectMode={isMultiSelectMode}
                 isSelected={selectedIds.has(msg.id)}
@@ -1649,9 +1920,7 @@ export default function MessageApp() {
           )}
           <div className="px-4 py-3 border-t border-white/5">
             <div className="flex items-center gap-2">
-              <button className="p-2 rounded-full hover:bg-white/10 transition-colors flex-shrink-0">
-                <Image size={20} className="text-white/50" />
-              </button>
+              
               <input
                 ref={inputRef}
                 type="text"
@@ -1703,6 +1972,22 @@ export default function MessageApp() {
               <button onClick={() => { setShowDeleteConfirm(false); setDeleteMsgId(null); }} className="glass-btn flex-1">取消</button>
               <button onClick={executeDelete} className="glass-btn bg-red-500/20 border-red-500/30 text-red-300 hover:bg-red-500/30 flex-1">删除</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== 存储限额警告（阶段 4 新增）==================== */}
+      {imageSizeWarning && (
+        <div className="absolute bottom-20 left-4 right-4 z-40">
+          <div className="glass-card bg-yellow-500/10 border-yellow-500/30 p-3 flex items-center gap-2">
+            <AlertTriangle size={16} className="text-yellow-400 flex-shrink-0" />
+            <p className="text-yellow-300/80 text-xs flex-1">{imageSizeWarning}</p>
+            <button 
+              onClick={() => setImageSizeWarning('')}
+              className="text-yellow-400/60 hover:text-yellow-400 flex-shrink-0"
+            >
+              <X size={14} />
+            </button>
           </div>
         </div>
       )}
