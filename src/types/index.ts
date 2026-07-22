@@ -262,7 +262,8 @@ export type AppID =
   | 'spark'
   | 'worldbook'
   | 'gallery'
-  | 'mcp';
+  | 'mcp'
+  | 'desktop';  // ← 新增：桌面应用
 
 export interface AppDefinition {
   id: AppID;
@@ -270,6 +271,14 @@ export interface AppDefinition {
   icon: string;
   color: string;
   component: React.LazyExoticComponent<React.ComponentType>;
+  implemented?: boolean;  // ← 新增：是否已实现（未实现显示灰色）
+}
+
+// ==================== 桌面配置（新增）====================
+
+export interface DesktopPageConfig {
+  id: number;
+  appIds: AppID[];
 }
 
 // ==================== 生图配置（阶段 4 新增）====================

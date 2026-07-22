@@ -15,6 +15,18 @@ export interface GenerateImageOptions {
   referenceImage?: string;
 }
 
+export interface CharacterImageOptions {
+  scenePrompt: string;
+  characterPositivePrompt?: string;
+  characterNegativePrompt?: string;
+  faceReferenceImage?: string;
+  characterId: string;
+  messageId: string;
+  width?: number;
+  height?: number;
+  model?: string;
+}
+
 export interface GenerateImageResult {
   blob: Blob;
   width: number;
@@ -71,7 +83,7 @@ export class ImageService {
 
   /**
    * 生成图片
-   * 
+   *
    * 支持多种生图 API 格式：
    * - OpenAI 格式（DALL-E、gpt-image-2、部分代理）
    * - Gemini 格式（gemini-*-image）
@@ -108,15 +120,30 @@ export class ImageService {
         break;
     }
 
-    // 3. 生成缩略图
-    const thumbnail = await this.createThumbnail(result.blob, { width: 400 });
+    // 3. 压缩主图（控制 IndexedDB 存储）
+    console.log('[ImageService] 原始图片大小:', this.formatSize(result.blob.size));
+    const compressedBlob = await this.compressImage(result.blob, {
+      maxWidth: 400,
+      maxHeight: 400,
+      quality: 0.85,
+      maxSizeKB: 200,
+    });
+    console.log('[ImageService] 压缩后大小:', this.formatSize(compressedBlob.size));
 
-    // 4. 构建 ImageRecord
+    // 4. 生成缩略图
+    const thumbnail = await this.compressImage(result.blob, {
+      maxWidth: 200,
+      maxHeight: 200,
+      quality: 0.7,
+      maxSizeKB: 50,
+    });
+
+    // 5. 构建 ImageRecord
     const record: ImageRecord = {
       id: crypto.randomUUID(),
       characterId,
       messageId,
-      url: await this.blobToBase64(result.blob),
+      url: await this.blobToBase64(compressedBlob),
       storageType: 'base64',
       prompt,
       negativePrompt,
@@ -124,70 +151,21 @@ export class ImageService {
       seed: result.seed,
       width: result.width,
       height: result.height,
-      size: result.blob.size,
-      mimeType: result.mimeType,
+      size: compressedBlob.size,
+      mimeType: 'image/jpeg',
       thumbnailUrl: await this.blobToBase64(thumbnail),
       generatedAt: Date.now(),
     };
 
-    // 5. 保存到 IndexedDB
+    // 6. 保存到 IndexedDB
     await saveImageRecord(record);
 
     return record;
   }
 
   /**
-   * 检测 API 格式类型
-   */
-  private detectApiFormat(model: string): 'openai' | 'gemini' {
-    const lower = model.toLowerCase();
-    if (lower.includes('gemini')) {
-      return 'gemini';
-    }
-    return 'openai';
-  }
-
-  /**
-   * 检测模型家族（阶段 4 新增）
-   * 
-   * 根据模型名自动判断：
-   * - 通义万相（wan）：支持参考图上传
-   * - GPT Image（gpt-image）：不支持参考图
-   * - Gemini（gemini）：取决于代理是否支持 inlineData
-   * - 硅基流动（其他）：不支持参考图
-   */
-  private detectModelFamily(model: string): {
-    family: 'wanxiang' | 'gpt-image' | 'gemini' | 'siliconflow' | 'other';
-    supportsReferenceImage: boolean;
-  } {
-    const lower = model.toLowerCase();
-
-    if (lower.includes('wan')) {
-      // 通义万相：wan2.6-image, wan2.7-image 等
-      return { family: 'wanxiang', supportsReferenceImage: true };
-    }
-
-    if (lower.includes('gpt-image')) {
-      // GPT Image 系列：gpt-image-2, gpt-image-2-2026-04-21 等
-      return { family: 'gpt-image', supportsReferenceImage: false };
-    }
-
-    if (lower.includes('gemini')) {
-      // Gemini：取决于代理是否支持 inlineData
-      return { family: 'gemini', supportsReferenceImage: false };
-    }
-
-    if (lower.includes('silicon') || lower.includes('flux') || lower.includes('sd')) {
-      // 硅基流动 / FLUX / Stable Diffusion
-      return { family: 'siliconflow', supportsReferenceImage: false };
-    }
-
-    return { family: 'other', supportsReferenceImage: false };
-  }
-
-  /**
-   * 检测模型家族（阶段 4 新增）
-   * 
+   * 检测模型家族
+   *
    * 根据模型名自动判断：
    * - 通义万相（wan）：支持参考图上传
    * - GPT Image（gpt-image）：不支持参考图
@@ -225,7 +203,7 @@ export class ImageService {
 
   /**
    * OpenAI 格式生图 API 调用
-   * 
+   *
    * 适用：DALL-E 2/3、gpt-image-2、硅基流动、通义万相（兼容模式）
    * Endpoint: POST /images/generations
    */
@@ -305,7 +283,7 @@ export class ImageService {
 
   /**
    * Gemini 格式生图 API 调用
-   * 
+   *
    * 适用：gemini-2.5-flash-image、gemini-3-pro-image 等
    * Endpoint: POST /models/{model}:generateContent
    */
@@ -380,7 +358,7 @@ export class ImageService {
 
   /**
    * 通义万相生图 API 调用（支持参考图）
-   * 
+   *
    * 适用：wan2.6-image, wan2.7-image 等
    * Endpoint: POST /api/v1/services/aigc/multimodal-generation/generation
    * 支持最多 9 张参考图（Base64 编码）
@@ -498,7 +476,7 @@ export class ImageService {
       // 不是 JSON，使用原始文本
     }
 
-    const errorMessage = 
+    const errorMessage =
       (errorData.error as Record<string, string>)?.message ||
       errorData.message ||
       errorText ||
@@ -534,16 +512,32 @@ export class ImageService {
   }
 
   // ================================================================
-  // 二、缩略图生成
+  // 二、图片压缩（阶段 4 收尾新增）
   // ================================================================
 
   /**
-   * 创建缩略图
-   * 
-   * 使用前端 canvas 压缩图片到指定宽度，控制单张缩略图 < 200KB
+   * 使用 canvas 压缩图片
+   *
+   * 策略：
+   * 1. 先按 maxWidth/maxHeight 缩放
+   * 2. 按 quality 压缩为 JPEG
+   * 3. 如果仍超过 maxSizeKB，自动降低 quality 再试（最多试 3 次）
+   *
+   * @param blob 原始图片 Blob
+   * @param options 压缩选项
+   * @returns 压缩后的 Blob
    */
-  async createThumbnail(blob: Blob, options: { width: number; quality?: number }): Promise<Blob> {
-    const { width: targetWidth, quality = 0.8 } = options;
+  async compressImage(
+    blob: Blob,
+    options: {
+      maxWidth: number;
+      maxHeight: number;
+      quality: number;
+      maxSizeKB: number;
+    }
+  ): Promise<Blob> {
+    const { maxWidth, maxHeight, maxSizeKB } = options;
+    let { quality } = options;
 
     return new Promise((resolve, reject) => {
       const img = new Image();
@@ -553,13 +547,17 @@ export class ImageService {
         URL.revokeObjectURL(url);
 
         // 计算缩放后的尺寸（保持宽高比）
-        const scale = targetWidth / img.width;
-        const targetHeight = Math.round(img.height * scale);
+        let { width, height } = img;
+        const scale = Math.min(maxWidth / width, maxHeight / height, 1);
+        if (scale < 1) {
+          width = Math.round(width * scale);
+          height = Math.round(height * scale);
+        }
 
         // 创建 canvas
         const canvas = document.createElement('canvas');
-        canvas.width = targetWidth;
-        canvas.height = targetHeight;
+        canvas.width = width;
+        canvas.height = height;
 
         const ctx = canvas.getContext('2d');
         if (!ctx) {
@@ -567,21 +565,38 @@ export class ImageService {
           return;
         }
 
-        // 绘制图片
-        ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+        // 绘制图片（白色背景，避免透明 PNG 变黑色）
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
 
-        // 导出为 blob
-        canvas.toBlob(
-          (thumbnailBlob) => {
-            if (thumbnailBlob) {
-              resolve(thumbnailBlob);
-            } else {
-              reject(new Error('缩略图生成失败'));
-            }
-          },
-          'image/jpeg',
-          quality
-        );
+        // 尝试压缩，如果超过大小限制则降低 quality
+        const tryCompress = (q: number): void => {
+          canvas.toBlob(
+            (compressedBlob) => {
+              if (!compressedBlob) {
+                reject(new Error('图片压缩失败'));
+                return;
+              }
+
+              const sizeKB = compressedBlob.size / 1024;
+              console.log(`[ImageService] 压缩尝试 quality=${q.toFixed(2)}, 大小=${sizeKB.toFixed(1)}KB`);
+
+              if (sizeKB > maxSizeKB && q > 0.3) {
+                // 仍超过限制，降低 quality 再试
+                const newQuality = Math.max(0.3, q - 0.15);
+                console.log(`[ImageService] 超过 ${maxSizeKB}KB 限制，降低 quality 到 ${newQuality.toFixed(2)} 重试`);
+                tryCompress(newQuality);
+              } else {
+                resolve(compressedBlob);
+              }
+            },
+            'image/jpeg',
+            q
+          );
+        };
+
+        tryCompress(quality);
       };
 
       img.onerror = () => {
@@ -594,12 +609,33 @@ export class ImageService {
   }
 
   // ================================================================
-  // 三、R2 上传（预留，阶段 2 实现）
+  // 三、缩略图生成（兼容旧方法，已整合到 compressImage）
+  // ================================================================
+
+  /**
+   * 创建缩略图
+   *
+   * 使用前端 canvas 压缩图片到指定宽度，控制单张缩略图 < 200KB
+   * @deprecated 请使用 compressImage() 替代
+   */
+  async createThumbnail(blob: Blob, options: { width: number; quality?: number }): Promise<Blob> {
+    const { width: targetWidth, quality = 0.8 } = options;
+
+    return this.compressImage(blob, {
+      maxWidth: targetWidth,
+      maxHeight: targetWidth,
+      quality,
+      maxSizeKB: 200,
+    });
+  }
+
+  // ================================================================
+  // 四、R2 上传（预留，阶段 2 实现）
   // ================================================================
 
   /**
    * 为角色生成图片 —— 自动拼接角色提示词并传入参考图
-   * 
+   *
    * 这是 AI 自主触发生图的主要入口。系统会自动：
    * 1. 将 characterPositivePrompt 拼接到 scenePrompt 前面
    * 2. 使用 characterNegativePrompt 作为 negative prompt
@@ -644,7 +680,7 @@ export class ImageService {
   }
 
   /**
-   * 
+   *
    * 阶段 1：空实现，返回 base64
    * 阶段 2：接入 R2 后，改为实际上传
    */
@@ -663,7 +699,7 @@ export class ImageService {
   }
 
   // ================================================================
-  // 四、存储限额查询
+  // 五、存储限额查询
   // ================================================================
 
   /**
@@ -700,7 +736,7 @@ export class ImageService {
   }
 
   // ================================================================
-  // 五、工具方法
+  // 六、工具方法
   // ================================================================
 
   /**
