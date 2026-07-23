@@ -78,9 +78,9 @@ export async function runMigrations(): Promise<void> {
         for (const memory of memories) {
           let needsUpdate = false;
 
-          // 补全 lastTouched（用于遗忘曲线计算）
-          if (memory.lastTouched === undefined || memory.lastTouched === null) {
-            memory.lastTouched = memory.createdAt || Date.now();
+          // 补全 lastAccessed（用于遗忘曲线计算，真实字段）
+          if (memory.lastAccessed === undefined || memory.lastAccessed === null) {
+            memory.lastAccessed = memory.createdAt || Date.now();
             needsUpdate = true;
           }
 

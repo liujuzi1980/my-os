@@ -315,6 +315,9 @@ export interface SystemSettings {
   amapKey?: string;        // 高德地图 API Key
   // === 阶段 4：生图配置 ===
   imageGeneration?: ImageGenerationConfig;
+  // === 阶段 B：记忆/上下文可调参数 ===
+  memoryBreathLimit?: number;   // 对话开头浮现的记忆条数（默认 5，候选 5/10/15/20）
+  chatHistoryRounds?: number;  // 喂给 AI 的聊天历史轮数（默认 15，候选 15/30/50；内部 *2 = 消息条数）
 }
 
 // ==================== 通知 ====================

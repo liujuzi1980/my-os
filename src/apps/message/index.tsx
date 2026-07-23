@@ -4,10 +4,11 @@ import { getChatsByCharacter, saveChatMessage, deleteAllChats, exportAllData } f
 import { ContextBuilder } from '@/core/ContextBuilder';
 import { MemoryEngine } from '@/core/MemoryEngine';
 import { MemoryCore } from '@/core/MemoryCore';
+import { MemorySearch } from '@/core/MemorySearch';
 import { mcpManager } from '@/core/MCPClientManager';
 import { parseAIResponse } from './parser';
 import { InnerMonologue } from '@/components/InnerMonologue';
-import { deriveMood, smoothEmotion } from '@/core/EmotionUtils';
+import { deriveMood, smoothEmotion, getEmotionColor } from '@/core/EmotionUtils';
 import { 
   Send, Phone, ChevronLeft, MoreVertical, Bot, 
   RotateCcw, Trash2, Copy, X, AlertTriangle, Check,
@@ -59,16 +60,6 @@ const AI_MENU_ITEMS: MessageMenuItem[] = [
 
 // ==================== 情感颜色工具（本地定义，避免外部依赖缺失）====================
 
-function getEmotionColor(valence: number, arousal: number): string {
-  if (valence > 0.3 && arousal > 0.5) return '#f59e0b'; // 兴奋 - amber
-  if (valence > 0.3 && arousal <= 0.5) return '#10b981'; // 满足 - emerald
-  if (valence > 0 && arousal > 0.5) return '#8b5cf6';    // 期待 - violet
-  if (valence <= 0 && arousal > 0.5) return '#ef4444';   // 焦虑 - red
-  if (valence < -0.3 && arousal > 0.5) return '#dc2626'; // 愤怒 - dark red
-  if (valence < -0.3 && arousal <= 0.5) return '#6b7280'; // 沮丧 - gray
-  if (valence < 0 && arousal <= 0.5) return '#64748b';   // 疲惫 - slate
-  return '#3b82f6'; // 平静 - blue
-}
 
 // ==================== 工具调用解析 ====================
 
@@ -550,6 +541,8 @@ export default function MessageApp() {
   const inputRef = useRef<HTMLInputElement>(null);
   const initializedRef = useRef(false);
   const isFirstMessageRef = useRef(true);
+  // 阶段 B：已浮现记忆去重池，避免调高 limit 后每轮都吐同几条
+  const surfacedIdsRingRef = useRef<string[]>([]);
 
   const character = getActiveCharacter();
 
@@ -668,7 +661,7 @@ export default function MessageApp() {
       const builder = ContextBuilder.create(character, state, userProfile, mcpTools, settings);
       const { messages: contextMessages, newState } = await builder.buildCoreContext(
         isFirstMessage, 
-        15, 
+        settings.chatHistoryRounds ?? 15, 
         surfacedMemories
       );
 
@@ -777,7 +770,7 @@ export default function MessageApp() {
           switch (toolCall.toolName) {
             case 'memory_breath': {
               const memories = await memoryCore.breath({ 
-                limit: 5, 
+                limit: settings.memoryBreathLimit ?? 5, 
                 includeResolved: false 
               });
               extraSystemMessages.push({
@@ -833,6 +826,19 @@ export default function MessageApp() {
               extraSystemMessages.push({
                 role: 'system',
                 content: `[记忆已修正] ${memory ? `成功更新记忆：${memory.content}` : '记忆未找到'}`,
+              });
+              break;
+            }
+            case 'memory_search': {
+              const args = toolCall.arguments as Record<string, unknown>;
+              const searchEngine = new MemorySearch(character.id);
+              const query = String(args.query || '');
+              const limit = typeof args.limit === 'number' ? args.limit : 8;
+              const results = await searchEngine.search(query, { limit, includeArchived: false });
+              const lines = results.map(r => `- [${r.score.toFixed(2)}] ${r.memory.content}`);
+              extraSystemMessages.push({
+                role: 'system',
+                content: `[记忆检索结果] query="${query}" 命中 ${results.length} 条：\n${lines.join('\n') || '（无结果）'}\n请据此继续回复用户，自然即可，不必提及你"搜索了记忆"。`,
               });
               break;
             }
@@ -1275,8 +1281,18 @@ export default function MessageApp() {
     let surfacedMemories: MemoryEntry[] = [];
     try {
       const memoryCore = new MemoryCore(character.id, settings);
-      surfacedMemories = await memoryCore.breath({ limit: 5, includeResolved: false });
-      console.log('[Message] breath surfaced', surfacedMemories.length, 'memories');
+      // 阶段 B：排除最近几轮已浮现过的记忆，保留最近 3×limit 条 id
+      const breathLimit = settings.memoryBreathLimit ?? 5;
+      surfacedMemories = await memoryCore.breath({
+        limit: breathLimit,
+        includeResolved: false,
+        excludeIds: surfacedIdsRingRef.current,
+      });
+      // 把本轮浮现的 id 推入池，只保留最近 3 轮的 id 防止池无限增长
+      const newIds = surfacedMemories.map(m => m.id);
+      surfacedIdsRingRef.current = [...surfacedIdsRingRef.current, ...newIds].slice(-3 * breathLimit);
+      const skippedByDedup = surfacedIdsRingRef.current.length - newIds.length;
+      console.log('[Message] breath surfaced', surfacedMemories.length, 'memories', skippedByDedup > 0 ? '(dedup pool)' : '');
     } catch (e) {
       console.error('[Message] breath failed:', e);
     }
@@ -1319,13 +1335,25 @@ export default function MessageApp() {
       const newArousal = parsed.arousal !== undefined
         ? smoothEmotion(currentState.arousal ?? 0.3, parsed.arousal, 0.3)
         : currentState.arousal;
+      // 追加情感历史点，供 EmotionChart 绘制曲线（最近 50 条）
+      const now = Date.now();
+      const emotionHistory = [
+        ...(currentState.emotionHistory || []),
+        {
+          valence: newValence ?? 0,
+          arousal: newArousal ?? 0.3,
+          timestamp: now,
+          trigger: (lastUserQueryRef.current || '对话').slice(0, 50),
+        },
+      ].slice(-50);
       await updateCharacterState(character.id, {
         ...currentState,
         valence: newValence,
         arousal: newArousal,
         innerMonologue: parsed.thought || currentState.innerMonologue,
         mood: deriveMood(newValence ?? 0, newArousal ?? 0.3),
-        stateUpdatedAt: Date.now(),
+        stateUpdatedAt: now,
+        emotionHistory,
       });
       console.log('[Emotion]', {
         mood: deriveMood(newValence ?? 0, newArousal ?? 0.3),
@@ -1439,7 +1467,7 @@ export default function MessageApp() {
 
       const mcpTools = getConnectedMCPTools();
       const builder = ContextBuilder.create(character, state, userProfile, mcpTools, settings);
-      const { messages: contextMessages, newState } = await builder.buildCoreContext(false, 15);
+      const { messages: contextMessages, newState } = await builder.buildCoreContext(false, settings.chatHistoryRounds ?? 15);
 
       const response = await fetch(`${settings.apiBaseUrl}/chat/completions`, {
         method: 'POST',
@@ -1500,13 +1528,26 @@ export default function MessageApp() {
           const newArousal = parsed.arousal !== undefined
             ? smoothEmotion(currentState.arousal ?? 0.3, parsed.arousal, 0.3)
             : currentState.arousal;
+          // 追加情感历史点（重roll 路径），供 EmotionChart 绘制曲线
+          const regenTrigger = (messages.filter(m => m.role === 'user').pop()?.content || lastUserQueryRef.current || '重roll').slice(0, 50);
+          const regenNow = Date.now();
+          const regenHistory = [
+            ...(currentState.emotionHistory || []),
+            {
+              valence: newValence ?? 0,
+              arousal: newArousal ?? 0.3,
+              timestamp: regenNow,
+              trigger: regenTrigger,
+            },
+          ].slice(-50);
           await updateCharacterState(character.id, {
             ...currentState,
             valence: newValence,
             arousal: newArousal,
             innerMonologue: parsed.thought || currentState.innerMonologue,
             mood: deriveMood(newValence ?? 0, newArousal ?? 0.3),
-            stateUpdatedAt: Date.now(),
+            stateUpdatedAt: regenNow,
+            emotionHistory: regenHistory,
           });
           setCurrentEmotion({ valence: newValence ?? 0, arousal: newArousal ?? 0.3 });
         }
@@ -1716,9 +1757,9 @@ export default function MessageApp() {
           <>
             {/* 左侧：头像 + 角色信息 */}
             <div className="flex items-center gap-3 min-w-0 flex-1">
-              <button onClick={() => setCurrentApp('character')} className="p-1.5 rounded-full hover:bg-white/10 transition-colors lg:hidden flex-shrink-0">
-                <ChevronLeft size={20} className="text-white/70" />
-              </button>
+              <button onClick={() => setCurrentApp('desktop')} className="p-1.5 rounded-full hover:bg-white/10 transition-colors flex-shrink-0">
+  <ChevronLeft size={20} className="text-white/70" />
+</button>
 
               <div className="relative flex-shrink-0">
                 <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center text-white text-sm font-bold">

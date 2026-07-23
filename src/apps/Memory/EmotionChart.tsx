@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useOSStore } from '@/context/OSStore';
-import { deriveMood } from '@/core/EmotionUtils';
+import { deriveMood, getEmotionColor } from '@/core/EmotionUtils';
 import { CalendarDays, TrendingUp, TrendingDown, Minus } from 'lucide-react';
 
 type TimeRange = '7d' | '30d' | 'all';
@@ -315,14 +315,3 @@ export default function EmotionChart() {
   );
 }
 
-// 情感颜色
-function getEmotionColor(valence: number, arousal: number): string {
-  if (valence > 0.3 && arousal > 0.5) return '#f59e0b';
-  if (valence > 0.3 && arousal <= 0.5) return '#10b981';
-  if (valence > 0 && arousal > 0.5) return '#8b5cf6';
-  if (valence <= 0 && arousal > 0.5) return '#ef4444';
-  if (valence < -0.3 && arousal > 0.5) return '#dc2626';
-  if (valence < -0.3 && arousal <= 0.5) return '#6b7280';
-  if (valence < 0 && arousal <= 0.5) return '#64748b';
-  return '#3b82f6';
-}

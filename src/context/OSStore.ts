@@ -86,6 +86,17 @@ export const useOSStore = create<OSState>()(
     (set, get) => ({
       currentApp: 'message',
       setCurrentApp: async (app) => {
+        // 离开聊天回桌面：把当前心情落为情绪余波，下次对话开头会注入 prompt
+        const prevApp = get().currentApp;
+        if (app === 'desktop' && prevApp === 'message') {
+          const activeId = get().activeCharacterId;
+          if (activeId) {
+            const st = get().characterStates[activeId];
+            if (st && st.mood) {
+              await get().updateCharacterState(activeId, { emotionalResidue: st.mood });
+            }
+          }
+        }
         set({ currentApp: app });
         const { settings } = get();
         if (settings.lastApp !== app) {
@@ -113,6 +124,14 @@ export const useOSStore = create<OSState>()(
         }
       },
       setActiveCharacter: async (id) => {
+        // 离开当前角色前：把当前心情落为情绪余波，下次对话开头会注入 prompt
+        const prevId = get().activeCharacterId;
+        if (prevId && prevId !== id) {
+          const prevState = get().characterStates[prevId];
+          if (prevState && prevState.mood) {
+            await get().updateCharacterState(prevId, { emotionalResidue: prevState.mood });
+          }
+        }
         set({ activeCharacterId: id });
         if (id) {
           await get().loadCharacterState(id);
@@ -245,6 +264,9 @@ export const useOSStore = create<OSState>()(
           model: '',
           enabled: false,
         },
+        // === 阶段 B：记忆/上下文可调参数默认值 ===
+        memoryBreathLimit: 5,
+        chatHistoryRounds: 15,
       },
       loadSettings: async () => {
         try {

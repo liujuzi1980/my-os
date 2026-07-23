@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
-import { deriveMood } from '@/core/EmotionUtils';
+import { deriveMood, getEmotionColor } from '@/core/EmotionUtils';
 import { 
   X, Save, Pin, CheckCircle2, Archive, 
-  Tag, SlidersHorizontal, BrainCircuit
+  Tag, SlidersHorizontal, BrainCircuit, ChevronLeft
 } from 'lucide-react';
 import type { MemoryEntry } from '@/types';
 
@@ -20,17 +20,7 @@ const DOMAINS = [
   { key: 'promise', label: '约定' },
 ];
 
-// 情感颜色
-function getEmotionColor(valence: number, arousal: number): string {
-  if (valence > 0.3 && arousal > 0.5) return '#f59e0b';
-  if (valence > 0.3 && arousal <= 0.5) return '#10b981';
-  if (valence > 0 && arousal > 0.5) return '#8b5cf6';
-  if (valence <= 0 && arousal > 0.5) return '#ef4444';
-  if (valence < -0.3 && arousal > 0.5) return '#dc2626';
-  if (valence < -0.3 && arousal <= 0.5) return '#6b7280';
-  if (valence < 0 && arousal <= 0.5) return '#64748b';
-  return '#3b82f6';
-}
+
 
 export default function MemoryEditor({ memory, onSave, onClose }: MemoryEditorProps) {
   const [content, setContent] = useState(memory.content);
@@ -81,9 +71,17 @@ export default function MemoryEditor({ memory, onSave, onClose }: MemoryEditorPr
       <div className="w-full max-w-md bg-[#1e1e2e] rounded-t-2xl border-t border-white/10 shadow-2xl max-h-[85vh] overflow-y-auto">
         {/* 头部 */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/5 sticky top-0 bg-[#1e1e2e] z-10">
-          <div className="flex items-center gap-2">
-            <BrainCircuit size={18} className="text-purple-400" />
-            <h2 className="text-white/90 text-base font-semibold">编辑记忆</h2>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-full hover:bg-white/10 transition-colors"
+            >
+              <ChevronLeft size={20} className="text-white/70" />
+            </button>
+            <div className="flex items-center gap-2">
+              <BrainCircuit size={18} className="text-purple-400" />
+              <h2 className="text-white/90 text-base font-semibold">编辑记忆</h2>
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <button

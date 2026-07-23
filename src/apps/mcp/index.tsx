@@ -383,7 +383,7 @@ export default function MCPApp() {
       <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
         <div className="flex items-center gap-3">
           <button
-            onClick={() => setCurrentApp('settings')}
+            onClick={() => setCurrentApp('desktop')}
             className="p-1.5 rounded-full hover:bg-white/10 transition-colors"
           >
             <ChevronLeft size={20} className="text-white/70" />

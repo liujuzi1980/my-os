@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useOSStore } from '@/context/OSStore';
-import { getAllMemoriesForCharacter, updateMemoryPartial } from '@/db';
-import { deriveMood } from '@/core/EmotionUtils';
+import { getAllMemoriesForCharacter, updateMemoryPartial, saveLifeStageSummary } from '@/db';
+import { deriveMood, getEmotionColor } from '@/core/EmotionUtils';
+import { MemoryAnalyzer } from '@/core/MemoryAnalyzer';
 import { 
   Brain, Search, Pin, CheckCircle2, Archive, 
   ChevronDown, ChevronUp, Edit3, X, Save,
-  SlidersHorizontal
+  SlidersHorizontal, ChevronLeft, Sparkles, Loader2
 } from 'lucide-react';
-import type { MemoryEntry } from '@/types';
+import type { MemoryEntry, LifeStageSummary, SystemSettings } from '@/types';
 import MemoryEditor from './MemoryEditor';
 import EmotionChart from './EmotionChart';
 
@@ -26,18 +27,6 @@ function getDomainConfig(domain?: string) {
   return DOMAINS.find(d => d.key === domain) || DOMAINS[DOMAINS.length - 1];
 }
 
-// ==================== 情感颜色 ====================
-
-function getEmotionColor(valence: number, arousal: number): string {
-  if (valence > 0.3 && arousal > 0.5) return '#f59e0b'; // 兴奋
-  if (valence > 0.3 && arousal <= 0.5) return '#10b981'; // 满足
-  if (valence > 0 && arousal > 0.5) return '#8b5cf6';    // 期待
-  if (valence <= 0 && arousal > 0.5) return '#ef4444';   // 焦虑
-  if (valence < -0.3 && arousal > 0.5) return '#dc2626'; // 愤怒
-  if (valence < -0.3 && arousal <= 0.5) return '#6b7280'; // 沮丧
-  if (valence < 0 && arousal <= 0.5) return '#64748b';   // 疲惫
-  return '#3b82f6'; // 平静
-}
 
 // ==================== 记忆权重计算（简化版）====================
 
@@ -59,13 +48,17 @@ function calculateWeight(memory: MemoryEntry): number {
 // ==================== 主组件 ====================
 
 export default function MemoryApp() {
-  const { activeCharacterId, getActiveCharacter } = useOSStore();
+  const { activeCharacterId, getActiveCharacter, setCurrentApp, settings } = useOSStore();
   const [memories, setMemories] = useState<MemoryEntry[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<'list' | 'chart'>('list');
   const [editingMemory, setEditingMemory] = useState<MemoryEntry | null>(null);
   const [expandedDomains, setExpandedDomains] = useState<Set<string>>(new Set(['daily']));
   const [loading, setLoading] = useState(true);
+  // 阶段 C：批量总结
+  const [summarizingDomain, setSummarizingDomain] = useState<string | null>(null);
+  const [summarizeCount, setSummarizeCount] = useState<50 | 100>(50);
+  const [summarizeStatus, setSummarizeStatus] = useState('');
 
   const character = getActiveCharacter();
 
@@ -128,6 +121,56 @@ export default function MemoryApp() {
     });
   };
 
+  // 阶段 C：把某领域最老的 N 条记忆压缩成一条人生阶段总结
+  const handleSummarize = async (domain: string) => {
+    if (!activeCharacterId) return;
+    setSummarizeStatus('分析中...');
+    try {
+      const analyzer = new MemoryAnalyzer(settings as SystemSettings);
+      // 取该领域未归档的 active 记忆，按最老优先，取前 N 条
+      const candidates = (memories as MemoryEntry[])
+        .filter(m => (m.domain || 'unknown') === domain && !m.archived && (m.status || 'active') === 'active')
+        .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+        .slice(0, summarizeCount);
+      if (candidates.length < 10) {
+        setSummarizeStatus('该领域不足 10 条可压缩记忆');
+        setTimeout(() => setSummarizeStatus(''), 3000);
+        return;
+      }
+      const summaryText = await analyzer.summarize(candidates);
+      if (!summaryText) {
+        setSummarizeStatus('总结失败：未返回内容');
+        setTimeout(() => setSummarizeStatus(''), 3000);
+        return;
+      }
+      // 情感快照：取这批记忆的均值
+      const vAvg = candidates.reduce((s, m) => s + (m.valence ?? m.emotion?.valence ?? 0), 0) / candidates.length;
+      const aAvg = candidates.reduce((s, m) => s + (m.arousal ?? m.emotion?.arousal ?? 0.3), 0) / candidates.length;
+      const summary: LifeStageSummary = {
+        id: crypto.randomUUID(),
+        characterId: activeCharacterId,
+        stageName: candidates.length + ' 条' + domain + ' 阶段汇总',
+        startTime: candidates[0].createdAt || Date.now(),
+        endTime: candidates[candidates.length - 1].createdAt || Date.now(),
+        summary: summaryText,
+        keyMemories: candidates.slice(0, 5).map(m => m.id),
+        emotionSnapshot: { valence: vAvg, arousal: aAvg },
+      };
+      await saveLifeStageSummary(summary);
+      // 原记忆归档（不删除，保留可回溯）
+      for (const m of candidates) {
+        await updateMemoryPartial(m.id, { archived: true, status: 'archived', archiveReason: 'merge' });
+      }
+      setSummarizeStatus('已压缩 ' + candidates.length + ' 条 → 1 条阶段总结');
+      setTimeout(() => { setSummarizeStatus(''); setSummarizingDomain(null); }, 2500);
+      await loadMemories();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '未知错误';
+      setSummarizeStatus('总结失败: ' + msg);
+      setTimeout(() => setSummarizeStatus(''), 4000);
+    }
+  };
+
   // 保存编辑
   const handleSave = async (updated: MemoryEntry) => {
     try {
@@ -163,10 +206,15 @@ export default function MemoryApp() {
     <div className="flex flex-col h-full overflow-hidden">
       {/* 顶部栏 */}
       <div className="flex items-center justify-between px-5 py-3 border-b border-white/5 flex-shrink-0">
-        <div className="flex items-center gap-2">
-          <Brain size={20} className="text-purple-400" />
-          <h1 className="text-white/90 text-base font-semibold">记忆管理</h1>
-          <span className="text-white/30 text-xs ml-1">{character.name}</span>
+        <div className="flex items-center gap-3">
+          <button onClick={() => setCurrentApp('desktop')} className="p-1.5 rounded-full hover:bg-white/10 transition-colors">
+            <ChevronLeft size={20} className="text-white/70" />
+          </button>
+          <div className="flex items-center gap-2">
+            <Brain size={20} className="text-purple-400" />
+            <h1 className="text-white/90 text-base font-semibold">记忆管理</h1>
+          </div>
+          <span className="text-white/30 text-xs">{character.name}</span>
         </div>
         <div className="flex items-center gap-1 bg-white/5 rounded-lg p-0.5">
           <button
@@ -255,6 +303,9 @@ export default function MemoryApp() {
                         />
                         <span className="text-white/70 text-sm font-medium">{label}</span>
                         <span className="text-white/30 text-xs">({domainMemories.length})</span>
+                        {domainMemories.filter(m => m.archived || m.status === 'archived').length > 0 && (
+                          <span className="text-purple-300/50 text-xs"> · 已归档 {domainMemories.filter(m => m.archived || m.status === 'archived').length}</span>
+                        )}
                       </div>
                       {isExpanded ? (
                         <ChevronUp size={14} className="text-white/40" />
@@ -265,6 +316,61 @@ export default function MemoryApp() {
 
                     {/* 记忆条目 */}
                     {isExpanded && (
+                      <>
+                      {/* 阶段 C：批量总结面板 */}
+                      <div className="px-3 py-2 bg-white/[0.03] flex items-center gap-2 flex-wrap border-b border-white/5">
+                        {summarizingDomain === key ? (
+                          <>
+                            <span className="text-white/50 text-xs">压缩条数</span>
+                            {[50, 100].map((n) => (
+                              <button
+                                key={n}
+                                onClick={() => setSummarizeCount(n as 50 | 100)}
+                                className={
+                                  summarizeCount === n
+                                    ? 'px-2 py-0.5 rounded-md text-xs bg-purple-500/30 text-purple-200 border border-purple-400/40'
+                                    : 'px-2 py-0.5 rounded-md text-xs bg-white/5 text-white/50 hover:bg-white/10 border border-transparent'
+                                }
+                              >
+                                {n}
+                              </button>
+                            ))}
+                            <button
+                              onClick={() => handleSummarize(key)}
+                              disabled={!!summarizeStatus}
+                              className="ml-auto px-2.5 py-1 rounded-md text-xs font-medium bg-purple-500/20 text-purple-200 hover:bg-purple-500/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                            >
+                              {summarizeStatus === '分析中...' ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                              开始总结
+                            </button>
+                            <button
+                              onClick={() => { setSummarizingDomain(null); setSummarizeStatus(''); }}
+                              className="px-1.5 py-0.5 rounded-md text-xs text-white/40 hover:bg-white/10"
+                            >
+                              <X size={12} />
+                            </button>
+                            {summarizeStatus && summarizeStatus !== '分析中...' && (
+                              <span
+                                className={
+                                  summarizeStatus.includes('失败') || summarizeStatus.includes('不足')
+                                    ? 'text-xs w-full text-red-400/80'
+                                    : 'text-xs w-full text-green-400/80'
+                                }
+                              >
+                                {summarizeStatus}
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          <button
+                            onClick={() => setSummarizingDomain(key)}
+                            className="ml-auto px-2.5 py-1 rounded-md text-xs text-purple-300/70 hover:text-purple-200 hover:bg-purple-500/10 transition-colors flex items-center gap-1"
+                          >
+                            <Sparkles size={12} />
+                            批量总结
+                          </button>
+                        )}
+                      </div>
                       <div className="divide-y divide-white/5">
                         {domainMemories.map((memory) => {
                           const v = memory.valence ?? memory.emotion?.valence ?? 0;
@@ -350,6 +456,7 @@ export default function MemoryApp() {
                           );
                         })}
                       </div>
+                      </>
                     )}
                   </div>
                 );

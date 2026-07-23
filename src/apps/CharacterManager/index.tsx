@@ -3,7 +3,7 @@ import { useOSStore } from '@/context/OSStore';
 import { saveCharacter, deleteCharacter } from '@/db';
 import { 
   Plus, Trash2, Edit3, MessageCircle, X, Bot, Sparkles, Heart,
-  Frown, Meh, Smile, HeartCrack, Image
+  Frown, Meh, Smile, HeartCrack, Image, ChevronLeft
 } from 'lucide-react';
 import type { Character, RelationshipStage } from '@/types';
 
@@ -127,9 +127,14 @@ export default function CharacterManagerApp() {
     return (
       <div className="flex flex-col h-full overflow-y-auto">
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
-          <h1 className="text-white/90 text-lg font-semibold">
-            {editingCharacter.id && characters.find(c => c.id === editingCharacter.id) ? '编辑角色' : '新建角色'}
-          </h1>
+          <div className="flex items-center gap-3">
+            <button onClick={() => setIsEditing(false)} className="p-1.5 rounded-full hover:bg-white/10 transition-colors">
+              <ChevronLeft size={20} className="text-white/70" />
+            </button>
+            <h1 className="text-white/90 text-lg font-semibold">
+              {editingCharacter.id && characters.find(c => c.id === editingCharacter.id) ? '编辑角色' : '新建角色'}
+            </h1>
+          </div>
           <button onClick={() => setIsEditing(false)} className="p-2 rounded-full hover:bg-white/10">
             <X size={20} className="text-white/60" />
           </button>
@@ -441,7 +446,12 @@ export default function CharacterManagerApp() {
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
-        <h1 className="text-white/90 text-lg font-semibold">角色管理</h1>
+        <div className="flex items-center gap-3">
+          <button onClick={() => setCurrentApp('desktop')} className="p-1.5 rounded-full hover:bg-white/10 transition-colors">
+            <ChevronLeft size={20} className="text-white/70" />
+          </button>
+          <h1 className="text-white/90 text-lg font-semibold">角色管理</h1>
+        </div>
         <button 
           onClick={handleNewCharacter}
           className="p-2 rounded-full bg-blue-500/20 hover:bg-blue-500/30 transition-colors"

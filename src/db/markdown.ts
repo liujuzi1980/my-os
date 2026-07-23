@@ -62,7 +62,7 @@ function memoryToFrontmatter(memory: MemoryEntry): string {
     ['domain', memory.domain],
     ['tags', memory.tags],
     ['createdAt', memory.createdAt],
-    ['lastTouched', memory.lastTouched],
+    ['lastAccessed', memory.lastAccessed],
     ['lastSurfaced', memory.lastSurfaced],
     ['archived', memory.archived],
     ['source', memory.source],
@@ -181,7 +181,7 @@ export function markdownToMemory(
     domain: parsed.domain || 'daily',
     tags: parseYamlArray(parsed.tags),
     createdAt: parseInt(parsed.createdAt, 10) || Date.now(),
-    lastTouched: parseInt(parsed.lastTouched, 10) || Date.now(),
+    lastAccessed: parseInt(parsed.lastAccessed, 10) || Date.now(),
     lastSurfaced: parseInt(parsed.lastSurfaced, 10) || 0,
     archived: parsed.archived === true || parsed.archived === 'true',
     source: (parsed.source as 'auto' | 'manual' | 'dream') || 'manual',
@@ -210,7 +210,7 @@ function parsePlainMarkdown(text: string, characterId?: string): MemoryEntry | n
     domain: 'daily',
     tags: [],
     createdAt: Date.now(),
-    lastTouched: Date.now(),
+    lastAccessed: Date.now(),
     lastSurfaced: 0,
     archived: false,
     source: 'manual',
@@ -580,7 +580,7 @@ export async function importMemoriesFromMarkdown(
               result.errors.push(`无法解析: ${entry.name}`);
               continue;
             }
-            memory.lastTouched = Date.now();
+            memory.lastAccessed = Date.now();
             await saveMemoryV2(memory);
             result.imported++;
           } catch (err) {
@@ -612,8 +612,8 @@ export async function importMemoriesFromMarkdown(
         continue;
       }
 
-      // 导入时更新 lastTouched 为当前时间
-      memory.lastTouched = Date.now();
+      // 导入时更新 lastAccessed 为当前时间
+      memory.lastAccessed = Date.now();
       await saveMemoryV2(memory);
       result.imported++;
     } catch (err) {
@@ -732,8 +732,8 @@ export async function importMemoriesFromZip(
           continue;
         }
 
-        // 导入时更新 lastTouched 为当前时间
-        memory.lastTouched = Date.now();
+        // 导入时更新 lastAccessed 为当前时间
+        memory.lastAccessed = Date.now();
         await saveMemoryV2(memory);
         result.imported++;
       } catch (err) {

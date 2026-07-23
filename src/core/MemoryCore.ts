@@ -141,6 +141,32 @@ export class MemoryCore {
     const arousal = options.arousal ?? 0.3;
     const importance = options.importance ?? 5;
     const pinned = options.pinned ?? false;
+    const domain = options.domain ?? 'daily';
+
+    // P2-3：hold 去重 —— 同领域 active 记忆里若已有高度相似的，合并而非新建
+    // 避免 AI 反复念叨同一件事攒一堆近重复条目、互相分权导致都浮不上来
+    const existing = (await getAllMemoriesForCharacter(this.characterId)).filter(m =>
+      !m.archived && (m.status || 'active') === 'active' && (m.domain || 'daily') === domain
+    );
+    const dup = existing.find(e => this.isSimilarContent(e.content, options.content));
+    if (dup) {
+      // 合并到已有记忆：importance 取较大、tags 并集、lastAccessed 刷成现在、valence/arousal 若新提供了就更新
+      const mergedTags = Array.from(new Set([...(dup.tags || []), ...(options.tags || [])]));
+      const mergedValence = options.valence !== undefined ? valence : (dup.valence ?? dup.emotion?.valence ?? 0);
+      const mergedArousal = options.arousal !== undefined ? arousal : (dup.arousal ?? dup.emotion?.arousal ?? 0.3);
+      const mergedImportance = Math.max(dup.importance ?? 5, importance);
+      await updateMemoryPartial(dup.id, {
+        importance: mergedImportance,
+        tags: mergedTags,
+        valence: mergedValence,
+        arousal: mergedArousal,
+        emotion: { valence: mergedValence, arousal: mergedArousal },
+        lastAccessed: now,
+      });
+      console.log('[MemoryCore] hold: merged into existing memory', dup.id, '(dup)');
+      // 返回合并后的快照
+      return { ...dup, importance: mergedImportance, tags: mergedTags, valence: mergedValence, arousal: mergedArousal, emotion: { valence: mergedValence, arousal: mergedArousal }, lastAccessed: now };
+    }
 
     const memory: MemoryEntry = {
       id: crypto.randomUUID(),
@@ -156,7 +182,7 @@ export class MemoryCore {
       lastAccessed: now,
       lastSurfaced: 0,
       tier: 'experience',
-      domain: options.domain ?? 'daily',
+      domain,
       tags: options.tags ?? [],
       status: 'active',
       archived: false,
@@ -170,6 +196,20 @@ export class MemoryCore {
 
     await saveMemoryV2(memory);
     return memory;
+  }
+
+  /** P2-3：内容相似度判断（保守版）—— 一条文本含另一条 ≥80% 长度的字符即视为重复 */
+  private isSimilarContent(a: string, b: string): boolean {
+    const s1 = a.trim();
+    const s2 = b.trim();
+    if (!s1 || !s2) return false;
+    if (s1 === s2) return true;
+    const shorter = s1.length <= s2.length ? s1 : s2;
+    const longer = s1.length <= s2.length ? s2 : s1;
+    // 长度若不足 8 个字符，要求完全相等（已在上面命中），避免误判短词
+    if (shorter.length < 8) return false;
+    // 较长的串包含较短的，且较短长度 ≥ 较长的 80%
+    return longer.includes(shorter) && shorter.length >= longer.length * 0.8;
   }
 
   // ================================================================

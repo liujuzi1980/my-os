@@ -3,7 +3,8 @@ import { useOSStore } from '@/context/OSStore';
 import { 
   Key, Globe, Mic, Save, Download, Upload, Trash2, ChevronRight, User, 
   RefreshCw, Check, ChevronDown, AlertCircle, WifiOff, ShieldAlert,
-  Plug, MapPin, FileText, Archive, Image
+  Plug, MapPin, FileText, Archive, Image, ChevronLeft,
+  Brain, MessageCircle
 } from 'lucide-react';
 import { exportAllData, importAllData } from '@/db';
 import { exportMemoriesToMarkdownZip, importMemoriesFromMarkdown } from '@/db/markdown';
@@ -352,7 +353,10 @@ export default function SettingsApp() {
 
   return (
     <div className="flex flex-col h-full overflow-y-auto">
-      <div className="px-5 py-4 border-b border-white/5">
+      <div className="flex items-center gap-3 px-5 py-4 border-b border-white/5">
+        <button onClick={() => setCurrentApp('desktop')} className="p-1.5 rounded-full hover:bg-white/10 transition-colors">
+          <ChevronLeft size={20} className="text-white/70" />
+        </button>
         <h1 className="text-white/90 text-lg font-semibold">设置</h1>
       </div>
 
@@ -812,6 +816,67 @@ export default function SettingsApp() {
                 {importMarkdownStatus}
               </p>
             )}
+          </div>
+        </section>
+
+        {/* 记忆 & 对话参数 */}
+        <section>
+          <h2 className="text-white/50 text-xs font-medium uppercase tracking-wider mb-3 flex items-center gap-2">
+            <Brain size={14} /> 记忆 & 对话
+          </h2>
+          <div className="space-y-4">
+
+            {/* 浮现记忆条数 */}
+            <div className="glass-card p-3">
+              <div className="flex items-center gap-2 mb-1.5">
+                <Brain size={16} className="text-purple-400 flex-shrink-0" />
+                <span className="text-white/80 text-sm">浮现记忆条数</span>
+              </div>
+              <p className="text-white/40 text-xs mb-2.5">每次对话开头自动浮现多少条记忆注入上下文。条数越多，角色记得越全，但 token 消耗也越高。</p>
+              <div className="flex gap-2">
+                {[5, 10, 15, 20].map((n) => (
+                  <button
+                    key={n}
+                    onClick={() => setLocalSettings({ ...localSettings, memoryBreathLimit: n })}
+                    className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                      (localSettings.memoryBreathLimit ?? 5) === n
+                        ? 'bg-purple-500/30 text-purple-200 border border-purple-400/40'
+                        : 'bg-white/5 text-white/50 hover:bg-white/10 border border-transparent'
+                    }`}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* 聊天历史轮数 */}
+            <div className="glass-card p-3">
+              <div className="flex items-center gap-2 mb-1.5">
+                <MessageCircle size={16} className="text-blue-400 flex-shrink-0" />
+                <span className="text-white/80 text-sm">聊天历史轮数</span>
+              </div>
+              <p className="text-white/40 text-xs mb-2.5">喂给 AI 的近期对话历史（一来一回算一轮）。轮数越多，AI 上下文越长，回复越慢、token 消耗越高。</p>
+              <div className="flex gap-2">
+                {[15, 30, 50].map((n) => (
+                  <button
+                    key={n}
+                    onClick={() => setLocalSettings({ ...localSettings, chatHistoryRounds: n })}
+                    className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                      (localSettings.chatHistoryRounds ?? 15) === n
+                        ? (n === 50 ? 'bg-orange-500/30 text-orange-200 border border-orange-400/40' : 'bg-blue-500/30 text-blue-200 border border-blue-400/40')
+                        : 'bg-white/5 text-white/50 hover:bg-white/10 border border-transparent'
+                    }`}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+              {(localSettings.chatHistoryRounds ?? 15) >= 50 && (
+                <p className="text-orange-400/70 text-[11px] mt-2">⚠ 较长的历史会让回复变慢、token 消耗明显增加</p>
+              )}
+            </div>
+
           </div>
         </section>
 

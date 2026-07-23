@@ -1,5 +1,5 @@
-import type { Character, CharacterState, ChatMessage, UserProfile, MCPConnection, MCPTool, MemoryEntry } from '@/types';
-import { getChatsByCharacter } from '@/db';
+import type { Character, CharacterState, ChatMessage, UserProfile, MCPConnection, MCPTool, MemoryEntry, LifeStageSummary } from '@/types';
+import { getChatsByCharacter, getLifeStageSummaries } from '@/db';
 
 export interface BuildResult {
   messages: Array<{ role: string; content: string }>;
@@ -79,13 +79,30 @@ export class ContextBuilder {
       });
     }
 
-    // 4. 近期对话历史（带时间戳，让 AI 感知时间流逝）
-    const recentMessages = await getChatsByCharacter(this.character.id, messageLimit * 2);
-    for (const msg of recentMessages) {
-      const timeStr = new Date(msg.timestamp).toLocaleTimeString('zh-CN', {
-        hour: '2-digit',
-        minute: '2-digit',
+    // 3.5 注入最近的人生阶段总结（MemoryAnalyzer 压缩出来的 LifeStageSummary）
+    // 让 AI 知道被 merge 归档的那批记忆讲了什么，不至于因为压缩而失忆
+    const lifeSummaries = await getLifeStageSummaries(this.character.id);
+    if (lifeSummaries.length > 0) {
+      context.push({
+        role: 'system',
+        content: this.buildLifeStageSummaryPrompt(lifeSummaries),
       });
+    }
+
+    // 4. 近期对话历史（带时间戳，让 AI 感知时间流逝）
+    // 当天消息只显示"时:分"，非当天追加"月/日"，让 AI 能区分跨天对话
+    const recentMessages = await getChatsByCharacter(this.character.id, messageLimit * 2);
+    const nowDate = new Date();
+    const isSameDay = (a: Date, b: Date) =>
+      a.getFullYear() === b.getFullYear() &&
+      a.getMonth() === b.getMonth() &&
+      a.getDate() === b.getDate();
+    for (const msg of recentMessages) {
+      const msgDate = new Date(msg.timestamp);
+      const hm = msgDate.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+      const timeStr = isSameDay(nowDate, msgDate)
+        ? hm
+        : `${msgDate.getMonth() + 1}/${msgDate.getDate()} ${hm}`;
       if (msg.role === 'system') {
         context.push({ role: msg.role, content: msg.content });
       } else {
@@ -263,6 +280,7 @@ export class ContextBuilder {
     parts.push('2. memory_hold —— 记下当前的一件事。参数：content(必填，一句话), feel(可选，第一人称感受), pinned(可选，是否钉选), domain(可选，领域), tags(可选，标签数组), valence(可选，-1到1), arousal(可选，0到1), importance(可选，1-10)');
     parts.push('3. memory_grow —— 整理长内容，拆成多条记忆。参数：content(必填，长文本)');
     parts.push('4. memory_trace —— 修正已有记忆的元数据。参数：memoryId(必填), resolved(可选), pinned(可选), valence(可选), arousal(可选), importance(可选), domain(可选), tags(可选), content(可选), summary(可选)');
+    parts.push("5. memory_search —— 主动回忆/检索旧记忆。当对话涉及你记不清的旧事、想确认「我们之前聊过XX吗」、或需要从过往经历里找相关线索时调用。参数：query(必填，关键词或要找的事的描述), limit(可选，返回几条，默认8)");
     parts.push('');
     parts.push('【使用示例】');
     parts.push('用户说"我喜欢喝咖啡" → 你应该在回复中插入：');
@@ -273,6 +291,11 @@ export class ContextBuilder {
     parts.push('用户说"下周三考试" → 你应该在回复中插入：');
     parts.push('```tool');
     parts.push('{ "tool": "memory_hold", "arguments": { "content": "用户下周三有考试", "domain": "daily", "importance": 8 } }');
+    parts.push('```');
+    parts.push('');
+    parts.push('用户说"你还记得我们上次聊的那个电影吗？" → 你想回忆时插入：');
+    parts.push('```tool');
+    parts.push('{ "tool": "memory_search", "arguments": { "query": "电影", "limit": 5 } }');
     parts.push('```');
     parts.push('');
     parts.push('【重要规则】');
@@ -307,6 +330,11 @@ export class ContextBuilder {
     parts.push('用户说"你在干嘛呢" → 如果你想展示自己正在做的事：');
     parts.push('```tool');
     parts.push('{ "tool": "generate_image", "arguments": { "prompt": "sitting at desk with laptop, warm lamp light, focused expression, coffee cup nearby", "scene": "scene" } }');
+    parts.push('```');
+    parts.push('');
+    parts.push('用户说"你还记得我们上次聊的那个电影吗？" → 你想回忆时插入：');
+    parts.push('```tool');
+    parts.push('{ "tool": "memory_search", "arguments": { "query": "电影", "limit": 5 } }');
     parts.push('```');
     parts.push('');
     parts.push('【重要规则】');
@@ -364,7 +392,24 @@ export class ContextBuilder {
   /**
    * 构建已浮现记忆的提示文本
    */
-  private buildSurfacedMemoriesPrompt(memories: MemoryEntry[]): string {
+  private buildLifeStageSummaryPrompt(summaries: LifeStageSummary[]): string {
+    if (summaries.length === 0) return '';
+    const lines: string[] = [];
+    lines.push('【你这段时间的经历概要】（这些是你压缩归档过的回忆总结，是你经历过的真实事情，可以作为背景使用）');
+    lines.push('');
+    // 最近 3 条按时间倒序，每条带阶段名和起止时间
+    const recent = summaries.slice().sort((a, b) => (b.endTime || 0) - (a.endTime || 0)).slice(0, 3);
+    for (const s of recent) {
+      const start = s.startTime ? new Date(s.startTime).toLocaleDateString('zh-CN') : '?';
+      const end = s.endTime ? new Date(s.endTime).toLocaleDateString('zh-CN') : '?';
+      lines.push('- 【' + s.stageName + '】(' + start + ' ~ ' + end + ') ' + s.summary);
+    }
+    lines.push('');
+    lines.push('（这些概要补充了你看不到的旧回忆细节，自然吸收即可，不必刻意复述）');
+    return lines.join(String.fromCharCode(10));
+  }
+
+    private buildSurfacedMemoriesPrompt(memories: MemoryEntry[]): string {
     if (memories.length === 0) return '';
 
     const lines: string[] = [];
