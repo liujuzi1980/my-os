@@ -1,4 +1,4 @@
-import { CharacterState, EmotionHistoryPoint, ParsedAIResponse } from '../types/emotion';
+import type { CharacterState, EmotionHistoryPoint, ParsedAIResponse } from '@/types';
 import { deriveMood, smoothEmotion, clampEmotion } from './EmotionUtils';
 
 const MAX_HISTORY = 50;
@@ -16,14 +16,14 @@ export class CharacterStateManager {
 
   /** 根据 AI 返回更新状态（含滑动平均） */
   updateFromAIResponse(parsed: ParsedAIResponse, trigger: string): CharacterState {
-    let newValence = this.state.valence;
-    let newArousal = this.state.arousal;
+    let newValence = this.state.valence ?? 0;
+    let newArousal = this.state.arousal ?? 0.3;
     let newThought = this.state.innerMonologue;
 
     if (parsed.valence !== undefined && parsed.arousal !== undefined) {
       const c = clampEmotion(parsed.valence, parsed.arousal);
-      newValence = smoothEmotion(this.state.valence, c.valence, 0.3);
-      newArousal = smoothEmotion(this.state.arousal, c.arousal, 0.3);
+      newValence = smoothEmotion(this.state.valence ?? 0, c.valence, 0.3);
+      newArousal = smoothEmotion(this.state.arousal ?? 0.3, c.arousal, 0.3);
     }
 
     if (parsed.thought) {
@@ -45,7 +45,7 @@ export class CharacterStateManager {
       mood: deriveMood(newValence, newArousal),
       innerMonologue: newThought,
       stateUpdatedAt: now,
-      emotionHistory: [...this.state.emotionHistory, point].slice(-MAX_HISTORY),
+      emotionHistory: [...(this.state.emotionHistory || []), point].slice(-MAX_HISTORY),
     };
 
     return this.getState();

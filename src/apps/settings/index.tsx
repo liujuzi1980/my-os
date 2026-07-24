@@ -4,9 +4,10 @@ import {
   Key, Globe, Mic, Save, Download, Upload, Trash2, ChevronRight, User, 
   RefreshCw, Check, ChevronDown, AlertCircle, WifiOff, ShieldAlert,
   Plug, MapPin, FileText, Archive, Image, ChevronLeft,
-  Brain, MessageCircle
+  Brain, MessageCircle, Loader2
 } from 'lucide-react';
-import { exportAllData, importAllData } from '@/db';
+import { exportAllData, importAllData, getMemoryVectorsByCharacter, saveMemoryVector, getAllMemoriesForCharacter } from '@/db';
+import { VectorEmbedding } from '@/core/VectorEmbedding';
 import { exportMemoriesToMarkdownZip, importMemoriesFromMarkdown } from '@/db/markdown';
 
 interface ModelInfo {
@@ -44,6 +45,8 @@ export default function SettingsApp() {
   // 记忆导出/导入状态
   const [exportMarkdownStatus, setExportMarkdownStatus] = useState('');
   const [importMarkdownStatus, setImportMarkdownStatus] = useState('');
+  // M4：向量化状态
+  const [vectorComputeStatus, setVectorComputeStatus] = useState('');
 
   const activeCharacter = characters.find(c => c.id === activeCharacterId);
 
@@ -344,6 +347,45 @@ export default function SettingsApp() {
       case 'network': return <WifiOff size={14} className="text-red-400 flex-shrink-0" />;
       case 'auth': return <Key size={14} className="text-yellow-400 flex-shrink-0" />;
       default: return <AlertCircle size={14} className="text-red-400 flex-shrink-0" />;
+    }
+  };
+
+  // M4：为当前角色的所有记忆计算向量
+  const handleComputeVectors = async () => {
+    if (!activeCharacterId) { setVectorComputeStatus('请先选择一个角色'); return; }
+    setVectorComputeStatus('计算中...');
+    try {
+      const config = settings.embeddingConfig;
+      if (!config || !config.enabled || !config.apiBaseUrl || !config.apiKey) {
+        setVectorComputeStatus('请先启用并配好 Embedding API');
+        setTimeout(() => setVectorComputeStatus(''), 4000);
+        return;
+      }
+      const memories = await getAllMemoriesForCharacter(activeCharacterId);
+      const active = memories.filter(m => !(m.archived || m.status === 'archived'));
+      if (active.length === 0) { setVectorComputeStatus('没有活跃的记忆需要向量化'); return; }
+      const existingVecs = await getMemoryVectorsByCharacter(activeCharacterId);
+      const existingIds = new Set(existingVecs.map(v => v.id));
+      const needVec = active.filter(m => !existingIds.has(m.id));
+      if (needVec.length === 0) { setVectorComputeStatus('所有记忆已有向量，无需重复计算'); setTimeout(() => setVectorComputeStatus(''), 3000); return; }
+      setVectorComputeStatus('正在向量化 ' + needVec.length + ' 条记忆...');
+      const embedder = new VectorEmbedding(config);
+      const texts = needVec.map(m => m.content + (m.summary ? ' ' + m.summary : ''));
+      const vectors = await embedder.embedBatch(texts);
+      const toSave = needVec.map((m, i) => ({
+        id: m.id,
+        characterId: activeCharacterId,
+        vector: vectors[i],
+        dimensions: vectors[i].length,
+        model: config.model,
+      }));
+      for (const v of toSave) await saveMemoryVector(v);
+      setVectorComputeStatus('向量化完成: ' + toSave.length + ' 条');
+      setTimeout(() => setVectorComputeStatus(''), 4000);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '未知错误';
+      setVectorComputeStatus('失败: ' + msg.slice(0, 100));
+      setTimeout(() => setVectorComputeStatus(''), 5000);
     }
   };
 
@@ -777,7 +819,7 @@ export default function SettingsApp() {
               className="glass-card w-full p-3 flex items-center justify-between text-left hover:bg-white/10 transition-colors disabled:opacity-60"
             >
               <div className="flex items-center gap-3">
-                <Archive size={18} className="text-purple-400" />
+                <Archive size={18} className="text-violet-500" />
                 <div>
                   <span className="text-white/80 text-sm">导出记忆为 Markdown</span>
                   {activeCharacter && (
@@ -796,7 +838,7 @@ export default function SettingsApp() {
             {/* 从 Markdown 导入记忆 */}
             <label className="glass-card w-full p-3 flex items-center justify-between text-left hover:bg-white/10 cursor-pointer block">
               <div className="flex items-center gap-3">
-                <FileText size={18} className="text-emerald-400" />
+                <FileText size={18} className="text-violet-500" />
                 <div>
                   <span className="text-white/80 text-sm">从 Markdown 导入记忆</span>
                   <p className="text-white/30 text-xs">支持 .zip 或 .md 文件批量导入</p>
@@ -829,7 +871,7 @@ export default function SettingsApp() {
             {/* 浮现记忆条数 */}
             <div className="glass-card p-3">
               <div className="flex items-center gap-2 mb-1.5">
-                <Brain size={16} className="text-purple-400 flex-shrink-0" />
+                <Brain size={16} className="text-violet-500 flex-shrink-0" />
                 <span className="text-white/80 text-sm">浮现记忆条数</span>
               </div>
               <p className="text-white/40 text-xs mb-2.5">每次对话开头自动浮现多少条记忆注入上下文。条数越多，角色记得越全，但 token 消耗也越高。</p>
@@ -853,7 +895,7 @@ export default function SettingsApp() {
             {/* 聊天历史轮数 */}
             <div className="glass-card p-3">
               <div className="flex items-center gap-2 mb-1.5">
-                <MessageCircle size={16} className="text-blue-400 flex-shrink-0" />
+                <MessageCircle size={16} className="text-violet-500 flex-shrink-0" />
                 <span className="text-white/80 text-sm">聊天历史轮数</span>
               </div>
               <p className="text-white/40 text-xs mb-2.5">喂给 AI 的近期对话历史（一来一回算一轮）。轮数越多，AI 上下文越长，回复越慢、token 消耗越高。</p>
@@ -880,6 +922,70 @@ export default function SettingsApp() {
           </div>
         </section>
 
+        {/* M4：Embedding 向量检索配置 */}
+        <section>
+          <h2 className="text-white/50 text-xs font-medium uppercase tracking-wider mb-3 flex items-center gap-2">
+            <Brain size={14} /> Embedding 向量检索
+          </h2>
+          <div className="space-y-2">
+            <div className="glass-card p-3">
+              <div className="flex items-center justify-between">
+                <span className="text-white/80 text-sm">启用向量检索</span>
+                <button
+                  onClick={() => {
+                    const cur = localSettings.embeddingConfig || { apiBaseUrl: '', apiKey: '', model: 'text-embedding-3-small', enabled: false };
+                    setLocalSettings({ ...localSettings, embeddingConfig: { ...cur, enabled: !cur.enabled } });
+                  }}
+                  className={`
+                    w-11 h-6 rounded-full transition-colors relative
+                    ${localSettings.embeddingConfig?.enabled ? 'bg-green-500' : 'bg-white/10'}
+                  `}
+                >
+                  <span
+                    className="absolute top-0.5 w-5 h-5 bg-white rounded-full transition-transform"
+                    style={{
+                      transform: localSettings.embeddingConfig?.enabled ? 'translateX(20px)' : 'translateX(0)',
+                      left: '2px'
+                    }}
+                  />
+                </button>
+              </div>
+            </div>
+
+            <div className="glass-card p-3 flex flex-col gap-3">
+              <div>
+                <label className="text-white/60 text-xs block mb-1">API Base URL</label>
+                <input type="text" value={localSettings.embeddingConfig?.apiBaseUrl || ''}
+                  onChange={(e) => { const c = localSettings.embeddingConfig || { apiBaseUrl: '', apiKey: '', model: 'text-embedding-3-small', enabled: false }; setLocalSettings({ ...localSettings, embeddingConfig: { ...c, apiBaseUrl: e.target.value } }); }}
+                  placeholder="https://api.siliconflow.cn/v1" className="glass-input w-full text-sm" />
+              </div>
+              <div>
+                <label className="text-white/60 text-xs block mb-1">API Key</label>
+                <input type="password" value={localSettings.embeddingConfig?.apiKey || ''}
+                  onChange={(e) => { const c = localSettings.embeddingConfig || { apiBaseUrl: '', apiKey: '', model: 'text-embedding-3-small', enabled: false }; setLocalSettings({ ...localSettings, embeddingConfig: { ...c, apiKey: e.target.value } }); }}
+                  placeholder="sk-..." className="glass-input w-full text-sm" />
+              </div>
+              <div>
+                <label className="text-white/60 text-xs block mb-1">模型（默认 text-embedding-3-small）</label>
+                <input type="text" value={localSettings.embeddingConfig?.model || 'text-embedding-3-small'}
+                  onChange={(e) => { const c = localSettings.embeddingConfig || { apiBaseUrl: '', apiKey: '', model: 'text-embedding-3-small', enabled: false }; setLocalSettings({ ...localSettings, embeddingConfig: { ...c, model: e.target.value } }); }}
+                  placeholder="text-embedding-3-small" className="glass-input w-full text-sm" />
+              </div>
+            </div>
+
+            <div className="glass-card p-3">
+              <button onClick={handleComputeVectors} disabled={!!vectorComputeStatus}
+                className="w-full py-2 rounded-lg text-sm font-medium bg-blue-500/20 text-blue-200 hover:bg-blue-500/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1">
+                {vectorComputeStatus === '计算中...' ? (<Loader2 size={14} className="animate-spin" />) : (<Brain size={14} />)}
+                {vectorComputeStatus || '为所有记忆计算向量'}
+              </button>
+              {vectorComputeStatus && vectorComputeStatus !== '计算中...' && (
+                <p className={'text-xs mt-1 ' + (vectorComputeStatus.includes('失败') ? 'text-red-400/80' : 'text-green-400/80')}>{vectorComputeStatus}</p>
+              )}
+            </div>
+          </div>
+        </section>
+
         {/* 数据管理 */}
         <section>
           <h2 className="text-white/50 text-xs font-medium uppercase tracking-wider mb-3 flex items-center gap-2">
@@ -896,7 +1002,7 @@ export default function SettingsApp() {
 
             <label className="glass-card w-full p-3 flex items-center justify-between text-left hover:bg-white/10 cursor-pointer block">
               <div className="flex items-center gap-3">
-                <Upload size={18} className="text-green-400" />
+                <Upload size={18} className="text-violet-500" />
                 <span className="text-white/80 text-sm">导入数据</span>
               </div>
               <ChevronRight size={16} className="text-white/30" />

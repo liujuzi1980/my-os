@@ -281,6 +281,76 @@ export interface DesktopPageConfig {
   appIds: AppID[];
 }
 
+// ==================== Embedding 配置（阶段 M4 新增）====================
+
+export interface EmbeddingConfig {
+  apiBaseUrl: string;
+  apiKey: string;
+  model: string;          // 默认 text-embedding-3-small
+  enabled: boolean;
+}
+
+export interface MemoryVector {
+  id: string;              // memoryId
+  characterId: string;
+  vector: number[];
+  dimensions: number;
+  model?: string;          // 生成此向量的 embedding 模型名
+}
+
+// ==================== 期盼生命周期（M2 新增）====================
+
+export type AnticipationStatus = 'active' | 'anchor' | 'fulfilled' | 'disappointed';
+
+export interface Anticipation {
+  id: string;
+  characterId: string;
+  content: string;           // 期盼内容（如「下次一起去吃火锅」）
+  status: AnticipationStatus;
+  createdAt: number;
+  anchoredAt?: number;       // active → anchor 的时间
+  resolvedAt?: number;       // fulfilled/disappointed 的时间
+  triggerMessage?: string;   // 触发这条期盼的用户原话
+}
+
+// ==================== 房间门牌（M5 新增）====================
+
+export type PlateRoom = 'user_room' | 'self_room' | 'bedroom' | 'study';
+
+export interface PlateEntry {
+  id: string;
+  text: string;            // 梗概条目（≤50字）
+  firstLearnedAt: number; // 首次蒸馏出这条的时间
+  updatedAt: number;
+  sourceCount: number;     // 被印证的次数
+  tag?: string;            // 2-4字分类标签
+}
+
+export interface RoomPlate {
+  id: string;              // charId:room
+  characterId: string;
+  room: PlateRoom;
+  entries: PlateEntry[];
+  updatedAt: number;
+  version: number;
+}
+
+export const PLATE_ROOMS: PlateRoom[] = ['user_room', 'self_room', 'bedroom', 'study'];
+
+export const PLATE_TITLES: Record<PlateRoom, string> = {
+  user_room: 'TA的事',
+  self_room: '我是谁',
+  bedroom:   '我们之间',
+  study:     '我的领域',
+};
+
+export const PLATE_ENTRY_CAPS: Record<PlateRoom, number> = {
+  user_room: 12,
+  self_room: 10,
+  bedroom:   10,
+  study:     8,
+};
+
 // ==================== 生图配置（阶段 4 新增）====================
 
 export interface ImageGenerationConfig {
@@ -316,6 +386,7 @@ export interface SystemSettings {
   // === 阶段 4：生图配置 ===
   imageGeneration?: ImageGenerationConfig;
   // === 阶段 B：记忆/上下文可调参数 ===
+  embeddingConfig?: EmbeddingConfig;
   memoryBreathLimit?: number;   // 对话开头浮现的记忆条数（默认 5，候选 5/10/15/20）
   chatHistoryRounds?: number;  // 喂给 AI 的聊天历史轮数（默认 15，候选 15/30/50；内部 *2 = 消息条数）
 }

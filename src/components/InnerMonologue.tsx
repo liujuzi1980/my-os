@@ -9,16 +9,23 @@ export const InnerMonologue: React.FC<Props> = ({ thought }) => {
   if (!thought) return null;
 
   return (
-    <div className="mt-1">
+    <div className="mt-2">
       <button
         onClick={() => setOpen(!open)}
-        className="text-xs text-white/40 hover:text-white/70 flex items-center gap-1 cursor-pointer"
+        className="flex items-center gap-1.5 text-xs group"
       >
-        <span>{open ? '🔽' : '💭'}</span>
-        <span className="italic">{open ? '收起心声' : '查看心声'}</span>
+        {open ? (
+          <span className="text-purple-300/60 hover:text-purple-300/90">收起心声</span>
+        ) : (
+          <>
+            <span className="w-5 h-5 rounded flex items-center justify-center bg-purple-500/10 text-purple-300 text-[11px]"
+              style={{ fontFamily: 'serif', fontStyle: 'italic' }}>心</span>
+            <span className="text-purple-300/50 group-hover:text-purple-300/80">心声</span>
+          </>
+        )}
       </button>
       {open && (
-        <div className="mt-1 text-xs text-white/30 italic border-l-2 border-white/10 pl-2">
+        <div className="narrative-card mt-2 text-xs leading-relaxed">
           {thought}
         </div>
       )}

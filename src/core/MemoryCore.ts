@@ -3,6 +3,7 @@ import {
   getAllMemoriesForCharacter, 
   saveMemoryV2, 
   updateMemoryPartial,
+  getDB,
 } from '@/db';
 
 // ==================== 接口定义 ====================
@@ -86,8 +87,8 @@ export class MemoryCore {
     // 稳定性：基础 1 + 唤醒度加成 + 重要性加成
     const stability = 1 + arousal * 2 + (importance / 10);
 
-    // 衰减速率（可调参数）
-    const lambda = 0.05;
+    // 衰减速率（可调参数，M3：根据 domain 调整）
+    const lambda = 0.05 * this.roomDecayFactor(memory.domain);
 
     // 保留率（改进版艾宾浩斯）
     const retention = Math.exp(-lambda * daysSinceTouch / stability);
@@ -110,11 +111,23 @@ export class MemoryCore {
     return weight;
   }
 
+  /** M3：根据 domain（房间）返回衰减速率倍率，promise=0 永不衰减，relationship 慢，daily 快 */
+  private roomDecayFactor(domain?: string): number {
+    switch (domain) {
+      case 'promise': return 0;         // 承诺永不衰减
+      case 'relationship': return 0.5;  // 关系慢衰减
+      case 'hobby': return 0.8;
+      case 'work': return 0.8;
+      default: return 1.0;              // daily/unknown 标准衰减
+    }
+  }
+
   /**
    * 判断记忆是否应该归档
    */
   shouldArchive(memory: MemoryEntry, now: number = Date.now()): boolean {
     if (memory.pinned || memory.isPinned) return false;
+    if (memory.domain === 'promise') return false;   // M3：承诺永远不归档
     if (!(memory.resolved ?? false)) return false;
     if (memory.archived || memory.status === 'archived') return false;
 
@@ -122,9 +135,9 @@ export class MemoryCore {
     const arousal = memory.arousal ?? memory.emotion?.arousal ?? 0.3;
     const importance = memory.importance ?? 5;
     const stability = 1 + arousal * 2 + (importance / 10);
-    const retention = Math.exp(-0.05 * daysSinceTouch / stability);
-
-    // 保留率低于 0.1 且已解决 → 归档
+    const lambda = 0.05 * this.roomDecayFactor(memory.domain);
+    if (lambda === 0) return false;
+    const retention = Math.exp(-lambda * daysSinceTouch / stability);
     return retention < 0.1;
   }
 
@@ -402,10 +415,17 @@ ${content.slice(0, 3000)}
     // 4. 取前 N 条
     const surfaced = weighted.slice(0, limit).map(w => w.memory);
 
-    // 5. 更新 lastSurfaced
+    // 5. 更新 lastSurfaced（批量一次 transaction，替代 N 次逐条 updateMemoryPartial）
+    const db = await getDB();
+    const tx = db.transaction('memories', 'readwrite');
     for (const m of surfaced) {
-      await updateMemoryPartial(m.id, { lastSurfaced: now });
+      const existing = await tx.store.get(m.id);
+      if (existing) {
+        existing.lastSurfaced = now;
+        await tx.store.put(existing);
+      }
     }
+    await tx.done;
 
     console.log('[MemoryCore] breath: surfaced', surfaced.length, 'memories');
     return surfaced;
@@ -447,7 +467,9 @@ ${content.slice(0, 3000)}
       const arousal = m.arousal ?? m.emotion?.arousal ?? 0.3;
       const importance = m.importance ?? 5;
       const stability = 1 + arousal * 2 + (importance / 10);
-      const retention = Math.exp(-0.05 * daysSinceTouch / stability);
+      const lambda = 0.05 * this.roomDecayFactor(m.domain);
+      const retention = Math.exp(-lambda * daysSinceTouch / stability);
+      if (lambda === 0) continue;
 
       if (retention < 0.3 && m.status !== 'fading') {
         await updateMemoryPartial(m.id, { status: 'fading' });

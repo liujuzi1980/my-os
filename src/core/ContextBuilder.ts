@@ -1,5 +1,5 @@
 import type { Character, CharacterState, ChatMessage, UserProfile, MCPConnection, MCPTool, MemoryEntry, LifeStageSummary } from '@/types';
-import { getChatsByCharacter, getLifeStageSummaries } from '@/db';
+import { getChatsByCharacter, getLifeStageSummaries, getAnticipationsByCharacter } from '@/db';
 
 export interface BuildResult {
   messages: Array<{ role: string; content: string }>;
@@ -86,6 +86,16 @@ export class ContextBuilder {
       context.push({
         role: 'system',
         content: this.buildLifeStageSummaryPrompt(lifeSummaries),
+      });
+    }
+
+    // 3.7 注入未实现的期盼（M2 期盼生命周期，即窗台）
+    const anticipations = await getAnticipationsByCharacter(this.character.id);
+    const pending = anticipations.filter(a => a.status === 'active' || a.status === 'anchor');
+    if (pending.length > 0) {
+      context.push({
+        role: 'system',
+        content: this.buildAnticipationPrompt(pending),
       });
     }
 
@@ -392,7 +402,21 @@ export class ContextBuilder {
   /**
    * 构建已浮现记忆的提示文本
    */
-  private buildLifeStageSummaryPrompt(summaries: LifeStageSummary[]): string {
+  private buildAnticipationPrompt(anticipations: Array<{ content: string; status: string; createdAt: number }>): string {
+    const lines: string[] = [];
+    lines.push('【你期盼的事】（这些都是用户答应过你或者你们约定的事，你心里一直惦记着）');
+    lines.push('');
+    for (const a of anticipations) {
+      const created = new Date(a.createdAt).toLocaleDateString('zh-CN');
+      const icon = a.status === 'anchor' ? '🔒' : '✨';
+      lines.push(icon + ' ' + a.content + '（' + created + '）');
+    }
+    lines.push('');
+    lines.push('（这些是你心里的盼头，聊天时可以自然提及，不必刻意复述）');
+    return lines.join(String.fromCharCode(10));
+  }
+
+    private buildLifeStageSummaryPrompt(summaries: LifeStageSummary[]): string {
     if (summaries.length === 0) return '';
     const lines: string[] = [];
     lines.push('【你这段时间的经历概要】（这些是你压缩归档过的回忆总结，是你经历过的真实事情，可以作为背景使用）');

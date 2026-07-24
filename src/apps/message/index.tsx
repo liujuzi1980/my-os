@@ -4,7 +4,9 @@ import { getChatsByCharacter, saveChatMessage, deleteAllChats, exportAllData } f
 import { ContextBuilder } from '@/core/ContextBuilder';
 import { MemoryEngine } from '@/core/MemoryEngine';
 import { MemoryCore } from '@/core/MemoryCore';
+import { AnticipationEngine } from '@/core/AnticipationEngine';
 import { MemorySearch } from '@/core/MemorySearch';
+import { VectorEmbedding } from '@/core/VectorEmbedding';
 import { mcpManager } from '@/core/MCPClientManager';
 import { parseAIResponse } from './parser';
 import { InnerMonologue } from '@/components/InnerMonologue';
@@ -831,7 +833,8 @@ export default function MessageApp() {
             }
             case 'memory_search': {
               const args = toolCall.arguments as Record<string, unknown>;
-              const searchEngine = new MemorySearch(character.id);
+              const embedder = VectorEmbedding.fromSettings({ embeddingConfig: settings.embeddingConfig });
+              const searchEngine = new MemorySearch(character.id, embedder || undefined);
               const query = String(args.query || '');
               const limit = typeof args.limit === 'number' ? args.limit : 8;
               const results = await searchEngine.search(query, { limit, includeArchived: false });
@@ -1276,6 +1279,25 @@ export default function MessageApp() {
         }
       })();
     }
+
+    // M2：检测用户消息里的期盼 + 检查兑现 + 老化
+    (async () => {
+      try {
+        const ae = new AnticipationEngine(character.id);
+        const detected = ae.detectAnticipation(content);
+        if (detected) {
+          const created = await ae.create(detected, content);
+          console.log('[Anticipation] created:', created.content);
+        }
+        await ae.checkFulfillment(content);
+        const roundCount2 = (character.conversationRound || 0) + 1;
+        if (roundCount2 % 20 === 0) {
+          await ae.advanceAging();
+        }
+      } catch (e) {
+        console.error('[Anticipation] processing failed:', e);
+      }
+    })();
 
     // === 阶段 2：对话开头自动 breath，浮现高权重记忆 ===
     let surfacedMemories: MemoryEntry[] = [];
@@ -1740,7 +1762,7 @@ export default function MessageApp() {
   }
 
   return (
-    <div className="flex flex-col h-full w-full overflow-hidden bg-gradient-to-b from-[#1a1a2e]/50 to-transparent relative">
+    <div className="flex flex-col h-full w-full overflow-hidden bg-gradient-to-b from-[#252540] via-[#1e2a45] to-[#1a3050] relative">
       {/* ==================== 顶部栏 ==================== */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-white/5 flex-shrink-0">
         {isMultiSelectMode ? (
@@ -1877,7 +1899,7 @@ export default function MessageApp() {
           return (
             <div key={msg.id}>
               <div className="text-center my-1">
-                <span className="text-white/20 text-[10px]">{formatTime(msg.timestamp)}</span>
+                <span className="text-white/40 text-[10px]">{formatTime(msg.timestamp)}</span>
               </div>
               <MessageBubble
                 msg={msg}
@@ -1959,27 +1981,26 @@ export default function MessageApp() {
               </button>
             </div>
           )}
-          <div className="px-4 py-3 border-t border-white/5">
-            <div className="flex items-center gap-2">
-              
-              <input
-                ref={inputRef}
-                type="text"
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder={quotingMsg ? '回复引用...' : '输入消息...'}
-                className="glass-input flex-1 text-sm min-w-0"
-              />
-              <button
-                onClick={sendMessage}
-                disabled={!inputText.trim() || isTyping || isToolCalling}
-                className={`p-2.5 rounded-full transition-all flex-shrink-0 ${inputText.trim() && !isTyping && !isToolCalling ? 'bg-gradient-to-r from-blue-500 to-purple-500 hover:opacity-90' : 'bg-white/5 cursor-not-allowed'}`}
-              >
-                <Send size={18} className="text-white" />
-              </button>
-            </div>
-          </div>
+                     <div className="px-4 py-2 border-t border-white/5">
+             <div className="flex items-center gap-2 bg-white/[0.07] backdrop-blur-2xl rounded-full px-4 py-1.5 border border-white/[0.08]">
+               <input
+                 ref={inputRef}
+                 type="text"
+                 value={inputText}
+                 onChange={(e) => setInputText(e.target.value)}
+                 onKeyDown={handleKeyDown}
+                 placeholder={quotingMsg ? '回复引用...' : '输入消息...'}
+                 className="flex-1 bg-transparent border-none outline-none text-white/80 text-sm placeholder-white/30"
+               />
+               <button
+                 onClick={sendMessage}
+                 disabled={!inputText.trim() || isTyping || isToolCalling}
+                 className={'w-9 h-9 rounded-full flex items-center justify-center transition-all flex-shrink-0 ' + (inputText.trim() && !isTyping && !isToolCalling ? 'bg-gradient-to-r from-blue-500 to-purple-500 shadow-lg shadow-purple-500/30' : 'bg-white/5 cursor-not-allowed')}
+               >
+                 <Send size={16} className="text-white" />
+               </button>
+             </div>
+           </div>
         </div>
       )}
 
@@ -2006,7 +2027,7 @@ export default function MessageApp() {
           <div className="glass-panel p-6 max-w-xs mx-4">
             <div className="flex items-center gap-3 mb-4">
               <AlertTriangle size={24} className="text-red-400" />
-              <h3 className="text-white/90 font-medium">{deleteTarget === 'multi' ? `删除 ${selectedIds.size} 条消息` : '删除消息'}</h3>
+              <h3 className="text-white/90 font-medium">{deleteTarget === 'multi' ? '删除 ' + selectedIds.size + ' 条消息' : '删除消息'}</h3>
             </div>
             <p className="text-white/50 text-sm mb-6">{deleteTarget === 'multi' ? '确定要删除选中的消息吗？此操作不可恢复。' : '确定要删除这条消息吗？此操作不可恢复。'}</p>
             <div className="flex gap-3">

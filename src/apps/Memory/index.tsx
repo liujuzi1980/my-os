@@ -48,7 +48,7 @@ function calculateWeight(memory: MemoryEntry): number {
 // ==================== 主组件 ====================
 
 export default function MemoryApp() {
-  const { activeCharacterId, getActiveCharacter, setCurrentApp, settings } = useOSStore();
+  const { activeCharacterId, getActiveCharacter, setCurrentApp, settings, characters, setActiveCharacter } = useOSStore();
   const [memories, setMemories] = useState<MemoryEntry[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<'list' | 'chart'>('list');
@@ -203,7 +203,7 @@ export default function MemoryApp() {
   }
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    <div className="flex flex-col h-full overflow-hidden" style={{ background: 'linear-gradient(180deg, #252540 0%, #1e2a45 100%)' }}>
       {/* 顶部栏 */}
       <div className="flex items-center justify-between px-5 py-3 border-b border-white/5 flex-shrink-0">
         <div className="flex items-center gap-3">
@@ -211,7 +211,7 @@ export default function MemoryApp() {
             <ChevronLeft size={20} className="text-white/70" />
           </button>
           <div className="flex items-center gap-2">
-            <Brain size={20} className="text-purple-400" />
+            <Brain size={20} className="text-white/70" />
             <h1 className="text-white/90 text-base font-semibold">记忆管理</h1>
           </div>
           <span className="text-white/30 text-xs">{character.name}</span>
@@ -236,7 +236,35 @@ export default function MemoryApp() {
         </div>
       </div>
 
-      {/* 内容区 */}
+            {/* 角色选择器 */}
+      {characters.length > 0 && (
+        <div className="flex items-center gap-4 px-5 py-2.5 overflow-x-auto flex-shrink-0 border-b border-white/5">
+          {characters.map(char => (
+            <button key={char.id} onClick={() => setActiveCharacter(char.id)}
+              className="flex flex-col items-center gap-1 flex-shrink-0 group">
+              <div className={'w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold transition-all duration-200 ' +
+                (char.id === activeCharacterId
+                  ? 'scale-110'
+                  : 'opacity-60 group-hover:opacity-90 group-hover:scale-105')}
+                style={{
+                  background: char.id === activeCharacterId
+                    ? 'linear-gradient(135deg, #8b5cf6, #6d28d9)'
+                    : 'rgba(139,92,246,0.1)',
+                  border: char.id === activeCharacterId ? '2px solid #8b5cf6' : '2px solid transparent',
+                  boxShadow: char.id === activeCharacterId ? '0 0 12px rgba(139,92,246,0.4)' : 'none',
+                }}>
+                {char.name[0]}
+              </div>
+              <span className={'text-[10px] truncate max-w-[48px] text-center ' +
+                (char.id === activeCharacterId ? 'text-purple-300 font-medium' : 'text-white/50')}>
+                {char.name}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* 内容区 */}{/* 内容区 */}
       {activeTab === 'list' && (
         <div className="flex-1 overflow-y-auto">
           {/* 搜索框 */}

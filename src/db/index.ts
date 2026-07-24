@@ -2,7 +2,7 @@ import { openDB, DBSchema, IDBPDatabase } from 'idb';
 import type { 
   Character, ChatMessage, SystemSettings, WorldBook, UserProfile,
   MemoryEntry, LifeStageSummary, CharacterState, ScheduleItem,
-  MCPConnection, ImageRecord
+  MCPConnection, ImageRecord, MemoryVector, Anticipation, RoomPlate
 } from '@/types';
 
 interface MyOSDB extends DBSchema {
@@ -43,10 +43,21 @@ interface MyOSDB extends DBSchema {
     value: ImageRecord;
     indexes: { 'by-character': string; 'by-message': string };
   };
+  roomPlates: { key: string; value: RoomPlate; };
+  anticipations: {
+    key: string;
+    value: Anticipation;
+    indexes: { 'by-character': string }; 
+  };
+  memoryVectors: {
+    key: string;
+    value: MemoryVector;
+    indexes: { 'by-character': string };
+  };
 }
 
 const DB_NAME = 'MyOS_v2';
-const DB_VERSION = 6;
+const DB_VERSION = 9;
 
 let dbPromise: Promise<IDBPDatabase<MyOSDB>> | null = null;
 
@@ -141,6 +152,19 @@ export function getDB(): Promise<IDBPDatabase<MyOSDB>> {
           store.createIndex('by-message', 'messageId');
         }
       }
+      if (oldVersion < 9) { if (!db.objectStoreNames.contains('roomPlates')) { db.createObjectStore('roomPlates', { keyPath: 'id' }); } }
+      if (oldVersion < 8) {
+        if (!db.objectStoreNames.contains('anticipations')) {
+          const aStore = db.createObjectStore('anticipations', { keyPath: 'id' });
+          aStore.createIndex('by-character', 'characterId');
+        }
+      }
+      if (oldVersion < 7) {
+        if (!db.objectStoreNames.contains('memoryVectors')) {
+          const vectorStore = db.createObjectStore('memoryVectors', { keyPath: 'id' });
+          vectorStore.createIndex('by-character', 'characterId');
+        }
+      }
     },
   });
 
@@ -197,6 +221,12 @@ export async function deleteCharacter(id: string): Promise<void> {
   const tx4 = db.transaction('images', 'readwrite');
   for (const img of allImages) await tx4.store.delete(img.id);
   await tx4.done;
+
+  // 级联删除向量
+  await deleteMemoryVectorsByCharacter(id);
+
+  // 级联删除期盼
+  await deleteAnticipationsByCharacter(id);
 }
 
 // ==================== 角色状态 CRUD ====================
@@ -403,6 +433,87 @@ export async function getImageRecord(id: string): Promise<ImageRecord | undefine
 export async function deleteImageRecord(id: string): Promise<void> {
   const db = await getDB();
   await db.delete('images', id);
+}
+
+// ==================== 向量 CRUD（M4 Embedding）====================
+
+export async function getMemoryVectorsByCharacter(characterId: string): Promise<MemoryVector[]> {
+  const db = await getDB();
+  const index = db.transaction('memoryVectors').store.index('by-character');
+  return index.getAll(characterId);
+}
+
+export async function saveMemoryVector(vector: MemoryVector): Promise<void> {
+  const db = await getDB();
+  await db.put('memoryVectors', vector);
+}
+
+export async function saveMemoryVectors(vectors: MemoryVector[]): Promise<void> {
+  const db = await getDB();
+  const tx = db.transaction('memoryVectors', 'readwrite');
+  for (const v of vectors) await tx.store.put(v);
+  await tx.done;
+}
+
+export async function deleteMemoryVector(id: string): Promise<void> {
+  const db = await getDB();
+  await db.delete('memoryVectors', id);
+}
+
+export async function deleteMemoryVectorsByCharacter(characterId: string): Promise<void> {
+  const db = await getDB();
+  const all = await getMemoryVectorsByCharacter(characterId);
+  const tx = db.transaction('memoryVectors', 'readwrite');
+  for (const v of all) await tx.store.delete(v.id);
+  await tx.done;
+}
+
+export async function getAllMemoryVectors(): Promise<MemoryVector[]> {
+  const db = await getDB();
+  return db.getAll('memoryVectors');
+}
+
+// ==================== 期盼生命周期 CRUD（M2）====================
+
+export async function getAnticipationsByCharacter(characterId: string): Promise<Anticipation[]> {
+  const db = await getDB();
+  const index = db.transaction('anticipations').store.index('by-character');
+  return index.getAll(characterId);
+}
+
+export async function saveAnticipation(a: Anticipation): Promise<void> {
+  const db = await getDB();
+  await db.put('anticipations', a);
+}
+
+export async function deleteAnticipation(id: string): Promise<void> {
+  const db = await getDB();
+  await db.delete('anticipations', id);
+}
+
+export async function deleteAnticipationsByCharacter(characterId: string): Promise<void> {
+  const db = await getDB();
+  const all = await getAnticipationsByCharacter(characterId);
+  const tx = db.transaction('anticipations', 'readwrite');
+  for (const a of all) await tx.store.delete(a.id);
+  await tx.done;
+}
+
+// ==================== 房间门牌 CRUD（M5）====================
+
+export async function getRoomPlate(id: string): Promise<RoomPlate | undefined> {
+  const db = await getDB();
+  return db.get('roomPlates', id);
+}
+
+export async function saveRoomPlate(plate: RoomPlate): Promise<void> {
+  const db = await getDB();
+  await db.put('roomPlates', plate);
+}
+
+export async function deleteRoomPlate(id: string): Promise<void> {
+  const db = await getDB();
+  await db.delete('roomPlates', id);
 }
 
 // ==================== MCP 连接 CRUD ====================

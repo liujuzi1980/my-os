@@ -264,6 +264,13 @@ export const useOSStore = create<OSState>()(
           model: '',
           enabled: false,
         },
+        // === M4：Embedding 配置默认值 ===
+        embeddingConfig: {
+          apiBaseUrl: '',
+          apiKey: '',
+          model: 'text-embedding-3-small',
+          enabled: false,
+        },
         // === 阶段 B：记忆/上下文可调参数默认值 ===
         memoryBreathLimit: 5,
         chatHistoryRounds: 15,

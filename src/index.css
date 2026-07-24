@@ -106,24 +106,39 @@
   }
 
   .message-bubble-user {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: linear-gradient(135deg, #5b7cfa 0%, #8b5cf6 100%);
     border-radius: 18px 18px 4px 18px;
     padding: 10px 14px;
     max-width: 75%;
     color: white;
     word-break: break-word;
     align-self: flex-end;
+    box-shadow: 0 2px 12px rgba(91, 124, 250, 0.2);
   }
 
   .message-bubble-ai {
-    background: rgba(255, 255, 255, 0.1);
+    background: linear-gradient(135deg, rgba(45, 40, 55, 0.6) 0%, rgba(35, 30, 50, 0.6) 100%);
     border-radius: 18px 18px 18px 4px;
     padding: 10px 14px;
     max-width: 75%;
-    color: rgba(255, 255, 255, 0.9);
+    color: rgba(255, 255, 255, 0.92);
     word-break: break-word;
     align-self: flex-start;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .message-bubble-ai::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: linear-gradient(180deg, #8b5cf6 0%, #3b82f6 100%);
+    border-radius: 2px 0 0 2px;
   }
 
   .dock-blur {
@@ -202,4 +217,106 @@
   button, input, textarea, select, [role="button"] {
     touch-action: manipulation;
   }
+}
+
+/* ========================
+   Design System 升级 (M3.2)
+   ======================== */
+
+/* CSS 变量 */
+:root {
+  --glass-bg: rgba(255, 255, 255, 0.06);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-hover: rgba(255, 255, 255, 0.12);
+  --accent-purple: #8b5cf6;
+  --accent-blue: #3b82f6;
+  --accent-amber: #f59e0b;
+  --accent-green: #10b981;
+  --accent-red: #ef4444;
+}
+
+/* 叙事卡片 — 用于记忆条目、思考链、门牌 */
+.narrative-card {
+  background: linear-gradient(135deg, rgba(42, 31, 61, 0.92) 0%, rgba(29, 21, 48, 0.92) 100%);
+  border: 1px solid rgba(201, 169, 106, 0.3);
+  border-radius: 4px;
+  padding: 12px 16px;
+  font-family: 'Noto Serif SC', 'Source Han Serif SC', serif;
+  color: #e9d9b8;
+  position: relative;
+  transition: all 0.2s ease;
+}
+.narrative-card:hover {
+  border-color: rgba(201, 169, 106, 0.5);
+  box-shadow: 0 0 20px rgba(201, 169, 106, 0.08);
+}
+
+/* 叙事卡片引用角标 */
+.narrative-card::before {
+  content: '\300C';
+  position: absolute;
+  top: -2px;
+  left: 4px;
+  font-size: 14px;
+  color: rgba(201, 169, 106, 0.4);
+}
+.narrative-card::after {
+  content: '\300D';
+  position: absolute;
+  bottom: -2px;
+  right: 4px;
+  font-size: 14px;
+  color: rgba(201, 169, 106, 0.4);
+}
+
+/* 玻璃卡片精调版本 — 微调 blur 和 border */
+.glass-card-refined {
+  background: var(--glass-bg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  transition: all 0.2s ease;
+}
+.glass-card-refined:hover {
+  background: var(--glass-hover);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+/* 情感色条 — 用于记忆条目左边缘 */
+.emotion-bar {
+  width: 3px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+/* 胶囊标签 */
+.capsule-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* 渐变分隔线 */
+.divider-gradient {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.15), transparent);
+}
+
+/* 状态指示器（在线点) */
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.status-dot.online {
+  background: #4ade80;
+  box-shadow: 0 0 6px rgba(74, 222, 128, 0.5);
 }

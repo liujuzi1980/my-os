@@ -4,7 +4,9 @@ import type {
   MemorySearchOptions, 
   MemorySearchResult 
 } from '@/types';
-import { getAllMemoriesForCharacter } from '@/db';
+import { getAllMemoriesForCharacter, getMemoryVectorsByCharacter } from '@/db';
+import { VectorEmbedding } from './VectorEmbedding';
+import { Bm25 } from './Bm25';
 
 // ==================== MemorySearch：混合检索引擎 ====================
 
@@ -23,9 +25,12 @@ import { getAllMemoriesForCharacter } from '@/db';
  */
 export class MemorySearch {
   private characterId: string;
+  private embedder?: VectorEmbedding;
 
-  constructor(characterId: string) {
+  constructor(characterId: string, embedder?: VectorEmbedding) {
     this.characterId = characterId;
+    this.embedder = embedder;
+    if (embedder) console.log('[MemorySearch] vector embedding enabled');
   }
 
   /**
@@ -68,9 +73,33 @@ export class MemorySearch {
       return true;
     });
 
-    // === 阶段 2：重排序（多通道融合打分）===
+        // === 阶段 2：重排序（多通道融合打分，含 BM25）===
     const queryLower = query.toLowerCase().trim();
     const queryWords = queryLower.split(/\s+/).filter(w => w.length > 1);
+
+    // --- 预计算 BM25 分数（中文 bigram 分词）---
+    let bm25Scores: Map<string, number> = new Map();
+    if (queryLower) {
+      try {
+        const bm25 = new Bm25(recalled.map(m => ({ id: m.id, content: m.content + (m.summary || '') })));
+        bm25Scores = bm25.score(queryLower);
+      } catch (e) {
+        console.warn("[MemorySearch] BM25 failed, falling back:", e);
+      }
+    }
+
+    // --- 预计算向量检索分数（若 embedder 已配置且有向量）---
+    let vectorScores: Map<string, number> = new Map();
+    if (this.embedder && queryLower) {
+      try {
+        const vectors = await getMemoryVectorsByCharacter(this.characterId);
+        if (vectors.length > 0) {
+          vectorScores = await this.embedder.scoreMemories(queryLower, vectors);
+        }
+      } catch (e) {
+        console.warn("[MemorySearch] vector search failed:", e);
+      }
+    }
 
     const scored = recalled.map(m => {
       // --- 通道 A：关键词包含匹配 ---
@@ -81,7 +110,6 @@ export class MemorySearch {
       const domainLower = (m.domain || '').toLowerCase();
 
       if (queryLower) {
-        // 完整短语匹配（最高优先级）
         if (contentLower.includes(queryLower)) {
           keywordScore = 1.0;
         } else if (summaryLower.includes(queryLower)) {
@@ -89,9 +117,8 @@ export class MemorySearch {
         } else if (tagsLower.includes(queryLower) || domainLower.includes(queryLower)) {
           keywordScore = 0.9;
         } else {
-          // 分词匹配
-          const hits = queryWords.filter(qw => 
-            contentLower.includes(qw) || 
+          const hits = queryWords.filter(qw =>
+            contentLower.includes(qw) ||
             summaryLower.includes(qw) ||
             tagsLower.includes(qw)
           ).length;
@@ -100,17 +127,22 @@ export class MemorySearch {
           }
         }
       } else {
-        // 无查询词时，关键词分设为中性
         keywordScore = 0.5;
       }
 
       // --- 通道 B：模糊匹配（简化版 LCS）---
       const fuzzyScore = queryLower ? this.calculateFuzzyScore(queryLower, contentLower) : 0.5;
 
-      // --- 通道 C：遗忘曲线权重 ---
+      // --- 通道 C：BM25（预计算分数 + 查表）---
+      const bm25Score = bm25Scores.get(m.id) ?? 0;
+
+      // --- 通道 D：向量语义相似度（预计算 + 查表）---
+      const vectorScore = vectorScores.get(m.id) ?? 0;
+
+      // --- 通道 E：遗忘曲线权重 ---
       const weightScore = this.calculateWeightScore(m, now);
 
-      // --- 通道 D：重要性 ---
+      // --- 通道 E：重要性 ---
       const importanceScore = (m.importance ?? 5) / 10;
 
       // --- 额外信号 ---
@@ -118,11 +150,14 @@ export class MemorySearch {
       const unresolvedScore = !(m.resolved ?? false) ? 0.1 : 0;
       const recentTouchScore = this.calculateRecentTouchScore(m, now);
 
-      // 融合得分（可调权重）
-      const finalScore = 
-        keywordScore * 0.30 +
-        fuzzyScore * 0.15 +
-        weightScore * 0.25 +
+      // 融合得分（BM25 最高权 0.25）
+      // 融合得分（五通道：关键词+LCS+BM25+向量+遗忘曲线+重要性）
+      const finalScore =
+        keywordScore * 0.15 +
+        fuzzyScore * 0.10 +
+        bm25Score * 0.20 +
+        vectorScore * 0.15 +
+        weightScore * 0.20 +
         importanceScore * 0.10 +
         recentTouchScore * 0.05 +
         pinScore +
